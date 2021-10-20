@@ -1,0 +1,3 @@
+*.sql
+dev.env
+prod.env
