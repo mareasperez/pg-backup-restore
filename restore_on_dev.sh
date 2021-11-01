@@ -37,10 +37,9 @@ echo "Starting restore script: $now"
 echo "Connecting to database: $DB_DATABASE"
 echo "psql -U $DB_USERNAME -h $DB_HOST -p $DB_PORT $DB_DATABASE -f "${SCRIPTPATH}/transfer.sql""
 psql -U $DB_USERNAME -h $DB_HOST -p $DB_PORT $DB_DATABASE -f"${SCRIPTPATH}/transfer.sql"
-
 echo "restore terminado"
 }
-
+SECONDS=0
 config=""
 folder_name=""
 SCRIPTPATH=""
@@ -48,3 +47,5 @@ load_dev_config
 load_config
 backup_db
 restore_db
+duration=$SECONDS
+echo "$(($duration / 60)) minutes and $(($duration % 60)) seconds elapsed."

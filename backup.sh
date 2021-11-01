@@ -37,6 +37,7 @@ echo "Starting backup script: $now"
 echo "Connecting to database: $DB_DATABASE"
 # echo "pg_dump -U $DB_USERNAME -h $DB_HOST -p $DB_PORT $DB_DATABASE >${SCRIPTPATH}/backups/${folder_name}/${folder_name}-$now.sql"
 pg_dump --clean -U $DB_USERNAME -h $DB_HOST -p $DB_PORT $DB_DATABASE > "${SCRIPTPATH}/backups/${folder_name}/${folder_name}-$now.sql"
+cp "${SCRIPTPATH}/backups/${folder_name}/${folder_name}-$now.sql" "${SCRIPTPATH}/transfer.sql"
 echo "Backup done: $(date)"
 }
 
@@ -53,6 +54,10 @@ else
     echo "ingrese dev o prod"
     exit 1
 fi
+SECONDS=0
+# do some work
 load_config
 backup_db
-echo "Backup terminado"
+# echo "Backup terminado en "
+duration=$SECONDS
+echo "$(($duration / 60)) minutes and $(($duration % 60)) seconds elapsed."
