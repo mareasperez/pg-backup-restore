@@ -47,6 +47,8 @@ function confim_backup() {
                 backup_db
         else
                 echo "Backup cancelado"
+                echo ""
+                echo ""
         fi
 }
 SECONDS=0
