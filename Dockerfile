@@ -1,7 +1,7 @@
 # postgresql image 
-FROM postgres:lastest
+FROM postgres
 
 # set the working directory
 WORKDIR /usr/src/app
-COPY transfer.sql /usr/src/app/transfer.sql
+COPY transfer.sql /usr/src/app/
 EXPOSE 5432
