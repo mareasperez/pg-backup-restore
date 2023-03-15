@@ -26,7 +26,8 @@ function backup_db() {
         echo "Starting backup script: $now"
         echo "Connecting to database: $DB_DATABASE"
         # echo "pg_dump -U $DB_USERNAME -h $DB_HOST -p $DB_PORT $DB_DATABASE >${SCRIPTPATH}/backups/${folder_name}/${folder_name}-$now.sql"
-        pg_dump -U $DB_USERNAME -h $DB_HOST -p $DB_PORT $DB_DATABASE >"${SCRIPTPATH}/backups/${folder_name}/${folder_name}-$now.sql"
+        # pg_dump -U $DB_USERNAME -h $DB_HOST -p $DB_PORT $DB_DATABASE >"${SCRIPTPATH}/backups/${folder_name}/${folder_name}-$now.sql"
+        pg_dump -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" -Fc --create -f "${SCRIPTPATH}/backups/${folder_name}/${folder_name}-$now.dump"
         echo "Backup done: $(date)"
 }
 
@@ -35,8 +36,10 @@ function restore_db() {
         now=$(date)
         echo "Starting restore script: $now"
         echo "Connecting to database: $DB_DATABASE"
-        echo "psql -U $DB_USERNAME -h $DB_HOST -p $DB_PORT $DB_DATABASE -f "${SCRIPTPATH}/transfer.sql""
-        psql -U $DB_USERNAME -h $DB_HOST -p $DB_PORT $DB_DATABASE -f"${SCRIPTPATH}/transfer.sql"
+        echo "pg_restore -h ${DB_HOST} -U ${DB_USERNAME} -d ${DB_DATABASE} --clean --verbose -F c "${SCRIPTPATH}/transfer.dump""
+        # psql -U $DB_USERNAME -h $DB_HOST -p $DB_PORT $DB_DATABASE -f"${SCRIPTPATH}/transfer.sql"
+        pg_restore -h ${DB_HOST} -U ${DB_USERNAME} -d ${DB_DATABASE} --clean --verbose -F c "${SCRIPTPATH}/transfer.dump"
+
         echo "restore terminado"
 }
 function confim_backup() {
