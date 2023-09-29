@@ -1,0 +1,15 @@
+#!/bin/bash
+
+# Load environment variables from .env file
+if [ -f .env ]
+then
+    export $(cat .env | sed 's/#.*//g' | xargs)
+fi
+
+function drop_all_tables() {
+    echo "Dropping all tables in database: $DB_DATABASE"
+    psql -h $DB_HOST -U $DB_USERNAME -d $DB_DATABASE -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
+    echo "All tables dropped."
+}
+
+drop_all_tables
