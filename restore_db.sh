@@ -19,6 +19,9 @@ BACKUP_ROOT="${BACKUP_ROOT:-$SCRIPTPATH/backups}" # base backups directory
 backup_file=""
 metadata_file=""
 
+# Max allowed backup age in seconds (30 minutes)
+MAX_BACKUP_AGE_SECONDS=$((30 * 60))
+
 ################################
 ########### LOGGING ############
 ################################
@@ -48,16 +51,15 @@ Backup layout expected:
   \$BACKUP_ROOT/<env>/<timestamp>/<env>.dump
   \$BACKUP_ROOT/<env>/<timestamp>/<env>.meta (optional)
 
-Flow:
-  1) Load environment variables (DB_DATABASE, DB_HOST, DB_USERNAME, DB_PASSWORD, DB_PORT).
-  2) Look for the latest backup folder for the selected env.
-  3) Show metadata and ask for confirmation.
-  4) If you say 'n', list all backups and let you pick one.
-  5) Ask for final confirmation and restore using pg_restore.
+Safety rules:
+  - Restore requires TWO confirmations:
+      1) Answer 'yes' to a confirmation question
+      2) Type the database name exactly
+  - Restore is ONLY allowed if the selected backup file is <= 30 minutes old.
 
 Examples:
   $SCRIPT_NAME --dev
-  $SCRIPT_NAME -p
+  $SCRIPT_NAME --prod
   CONFIG_FILE_PATH=/etc/myapp/prod.env BACKUP_ROOT=/mnt/backups $SCRIPT_NAME --prod
 
 EOF
@@ -159,7 +161,6 @@ list_backups_and_select() {
 
     local -a backup_dirs=()
     local dir
-    # Use sorted (newest last for nicer display)
     while IFS= read -r -d '' dir; do
         backup_dirs+=("$dir")
     done < <(find "$base_dir" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
@@ -197,7 +198,6 @@ list_backups_and_select() {
             local idx=$((selection - 1))
             local chosen_dir=""
             local n=0
-            # Walk again to find the nth valid dir
             for d in "${backup_dirs[@]}"; do
                 local dump_file="${d}/${FOLDER_NAME}.dump"
                 if [[ -f "$dump_file" ]]; then
@@ -235,7 +235,6 @@ load_latest_backup_or_select() {
 
     log "Looking for the latest backup in: $base_dir"
 
-    # Newest first (-t)
     local latest_backup_dir
     latest_backup_dir=$(ls -td "${base_dir}"/* 2>/dev/null | head -n 1 || true)
 
@@ -280,6 +279,36 @@ require_cmd() {
     fi
 }
 
+check_backup_age() {
+    require_cmd "stat"
+
+    if [[ -z "$backup_file" || ! -f "$backup_file" ]]; then
+        error "Backup file not set or does not exist: $backup_file"
+    fi
+
+    # Get backup file modification time (epoch seconds)
+    local backup_mtime
+    backup_mtime=$(stat -c %Y "$backup_file")
+
+    local now
+    now=$(date +%s)
+
+    local age=$(( now - backup_mtime ))
+
+    if (( age < 0 )); then
+        log "WARN: backup file appears to be from the future (clock issue?)."
+    fi
+
+    if (( age > MAX_BACKUP_AGE_SECONDS )); then
+        local minutes=$(( MAX_BACKUP_AGE_SECONDS / 60 ))
+        error "Selected backup is older than ${minutes} minutes. Restore is not allowed for safety."
+    fi
+
+    local age_min=$(( age / 60 ))
+    local age_sec=$(( age % 60 ))
+    log "Backup age: ${age_min} minutes and ${age_sec} seconds (within allowed window)."
+}
+
 confirm_restore() {
     echo
     echo "You are about to RESTORE database:"
@@ -289,14 +318,23 @@ confirm_restore() {
     echo "  DB_USERNAME = $DB_USERNAME"
     echo "  Backup file = $backup_file"
     echo
-    read -r -p "Type the database name ('$DB_DATABASE') to confirm restore, or anything else to abort: " answer
 
-    if [[ "$answer" != "$DB_DATABASE" ]]; then
-        log "Confirmation failed. Aborting."
+    # First confirmation
+    local ans
+    read -r -p "First confirmation: Are you absolutely sure you want to restore this backup? (yes/no) " ans
+    if [[ "$ans" != "yes" ]]; then
+        log "First confirmation denied. Aborting restore."
         exit 1
     fi
 
-    log "Confirmation accepted. Proceeding with restore."
+    # Second confirmation: type DB name
+    read -r -p "Second confirmation: Type the database name ('$DB_DATABASE') to confirm restore: " answer
+    if [[ "$answer" != "$DB_DATABASE" ]]; then
+        log "Second confirmation failed (database name mismatch). Aborting restore."
+        exit 1
+    fi
+
+    log "Double confirmation accepted. Proceeding with restore."
 }
 
 ################################
@@ -311,6 +349,10 @@ restore_db() {
         error "Backup file not set or does not exist: $backup_file"
     fi
 
+    # Security: ensure backup is recent enough
+    check_backup_age
+
+    # Double confirmation
     confirm_restore
 
     local port_arg=()
