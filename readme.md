@@ -95,6 +95,8 @@ Run everything via the central entry point:
 
 ./tool.sh restore --dev
 ./tool.sh restore --prod
+./tool.sh restore-latest --dev   # skip choose, still confirms DB name
+./tool.sh restore-latest --prod
 
 ./tool.sh list --dev      # show backups without restoring
 ./tool.sh list --prod

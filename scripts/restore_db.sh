@@ -10,7 +10,7 @@ CONFIG_BASENAME=""
 CONFIG_FILE_PATH="${CONFIG_FILE_PATH:-}"
 BACKUP_ROOT="${BACKUP_ROOT:-$SCRIPTPATH/../backups}"
 
-backup_file=""; metadata_file=""; LIST_ONLY=0
+backup_file=""; metadata_file=""; LIST_ONLY=0; FORCE_LATEST=0
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 error() { log "ERROR: $*"; exit 1; }
@@ -23,6 +23,7 @@ Flags:
   --dev|-d   Select dev environment
   --prod|-p  Select prod environment
   --list     List backups for env and exit (no restore)
+  --latest   Use latest backup without the (y/n) prompt
   -h|--help  Show help
 
 Env vars:
@@ -38,6 +39,7 @@ parse_args() {
       --dev|-d) ENVIRONMENT="dev"; FOLDER_NAME="dev"; CONFIG_BASENAME="dev.env"; env_set=1 ;;
       --prod|-p) ENVIRONMENT="prod"; FOLDER_NAME="prod"; CONFIG_BASENAME="prod.env"; env_set=1 ;;
       --list) LIST_ONLY=1 ;;
+      --latest) FORCE_LATEST=1 ;;
       -h|--help) usage; exit 0 ;;
       *) error "Unknown argument: $1" ;;
     esac; shift
@@ -104,7 +106,10 @@ load_latest_backup_or_select() {
   backup_file="${latest_backup_dir}/${FOLDER_NAME}.dump"; metadata_file="${latest_backup_dir}/${FOLDER_NAME}.meta"
   if [[ ! -f "$backup_file" ]]; then echo "Latest backup folder does not contain a .dump file: $latest_backup_dir"; list_backups_and_select; return; fi
   echo "Latest backup found: $(basename "$latest_backup_dir")"; [[ -f "$metadata_file" ]] && { echo "Backup metadata:"; cat "$metadata_file"; } || echo "Backup metadata: <missing>"
-  read -r -p "Do you want to restore this latest backup? (y/n) " confirm_restore; if [[ "$confirm_restore" != "y" ]]; then echo "You chose not to restore the latest backup."; list_backups_and_select; fi
+  if (( FORCE_LATEST == 0 )); then
+    read -r -p "Do you want to restore this latest backup? (y/n) " confirm_restore
+    if [[ "$confirm_restore" != "y" ]]; then echo "You chose not to restore the latest backup."; list_backups_and_select; fi
+  fi
 }
 
 confirm_restore() {
