@@ -87,22 +87,61 @@ Dependencies:
 
 # 3. Central Entry (`tool.sh`)
 
-Run everything via the central entry point (each operation now performs a pre-connection test `SELECT 1` before proceeding):
+Run everything via the central entry point (each operation performs a pre-connection test `SELECT 1`). Commands are grouped by workflow for clarity:
 
 ```
-./tool.sh backup --dev          # shows live progress (size, speed, ETA)
-./tool.sh backup --prod         # non-destructive read
+Prod -> Dev:
+     ./tool.sh sync-dev --dev        # Fresh PROD backup then restore into DEV (1 step)
+     ./tool.sh refresh-dev --dev     # Use latest existing PROD backup
+     ./tool.sh restore-prod --dev    # Choose specific PROD backup → DEV
 
-./tool.sh restore --dev         # destructive (DEV only in wrapper)
-./tool.sh restore-latest --dev  # latest dev backup (still confirms DB name)
+Dev Restore / Maintenance:
+     ./tool.sh restore --dev         # Choose specific DEV backup → DEV
+     ./tool.sh drop --dev --yes      # Reset DEV schema (auto pre-drop backup)
+     # Hidden: latest dev restore via script: scripts/restore_db.sh --target dev --latest
 
-./tool.sh list --dev            # list backups (safe)
-./tool.sh list --prod           # list backups (safe)
+Backups:
+     ./tool.sh backup --prod         # Non-destructive PROD backup
+     ./tool.sh backup --dev          # DEV backup
+     ./tool.sh list --prod           # List PROD backups
+     ./tool.sh list --dev            # List DEV backups
 
-./tool.sh drop --dev --yes      # destructive (DEV only)
+Utilities:
+     ./tool.sh deps --check
+     sudo ./tool.sh deps --install
+     ./tool.sh                        # Interactive menu
+```
 
-./tool.sh deps --check
-sudo ./tool.sh deps --install
+## 3.1 Global Configuration (`config.ini`)
+
+An optional non-secret settings file loaded before defaults. Precedence: exported env vars > `config.ini` > script defaults. Do NOT store credentials here (keep them in `dev.env` / `prod.env`).
+
+Example:
+```
+[paths]
+BACKUP_ROOT=./backups
+LOG_FILE=./backup.log
+
+[formats]
+TIMESTAMP_FORMAT=%Y-%m-%d-%H-%M
+
+[progress]
+PROGRESS_INTERVAL=1
+
+[restore]
+DEFAULT_SOURCE=prod
+```
+
+Implemented keys today:
+- BACKUP_ROOT: Root directory containing per-environment timestamp folders.
+- LOG_FILE: Shared log file for backup runs.
+- TIMESTAMP_FORMAT: Naming pattern for new backup folders (existing ones unchanged).
+- PROGRESS_INTERVAL: Polling interval hook (currently fixed at 1s; future use).
+
+Override examples (env var precedence):
+```
+BACKUP_ROOT=/data/bk LOG_FILE=/var/log/db-bk.log ./tool.sh backup --prod
+TIMESTAMP_FORMAT=%Y%m%d-%H%M GLOBAL_CONFIG_FILE=/etc/pgtool/config.ini ./tool.sh sync-dev --dev
 ```
 
 Manual PROD destructive operations (run underlying scripts directly):
@@ -165,32 +204,46 @@ To reduce risk, the interactive wrapper `tool.sh` forbids destructive production
 
 Rationale: avoiding accidental production data loss by requiring deliberate, explicit manual script invocation for destructive actions.
 
-### Sync / Refresh DEV from PROD (Source/Target Model)
+### Prod → Dev Workflows (Source/Target Model)
 
-Wrapper shortcut (latest prod -> dev):
+1. Sync (fresh snapshot):
 ```
-./tool.sh refresh-dev   # internally: --target dev --source prod --latest
+./tool.sh sync-dev --dev
 ```
+Performs a new PROD backup then restores it to DEV.
+
+2. Refresh (reuse latest existing backup):
+```
+./tool.sh refresh-dev --dev
+```
+Uses the most recent folder under `backups/prod/`.
+
+3. Restore specific PROD backup (interactive list):
+```
+./tool.sh restore-prod --dev
+```
+Rejecting the offered latest lists all available PROD timestamps.
 
 Manual equivalents:
 ```
-scripts/restore_db.sh --target dev --source prod --latest
-scripts/restore_db.sh --target dev --source prod          # reject latest to choose specific
+scripts/restore_db.sh --target dev --source prod --latest   # latest
+scripts/restore_db.sh --target dev --source prod            # choose
 ```
 
 Safety:
-- Requires typing the target (DEV) database name.
-- Reads PROD backup artifacts only; never writes to PROD.
-- Shows PROD metadata before confirmation.
+- Requires typing the DEV database name.
+- Reads PROD artifacts only; never writes to PROD.
+- Shows PROD metadata (size, checksums) before confirmation.
 
 # 5. Restore Script (`scripts/restore_db.sh`)
 
 Source/Target interface:
 ```
-./restore_db.sh --target dev                # dev <- dev (interactive latest)
-./restore_db.sh --target dev --source prod  # dev <- prod (interactive latest)
-./restore_db.sh --target dev --source prod --latest  # auto latest prod
-./restore_db.sh --target prod --latest      # prod <- prod (manual only)
+./restore_db.sh --target dev --source prod --latest     # Sync / refresh latest
+./restore_db.sh --target dev --source prod              # Choose PROD backup
+./restore_db.sh --target dev                            # Choose DEV backup
+./restore_db.sh --target dev --latest                   # Latest DEV backup (not in menu)
+./restore_db.sh --target prod --latest                  # PROD self-restore (manual only)
 ```
 
 Flow:
@@ -297,40 +350,46 @@ chmod -R 755 backups/
 # 11. Commands Summary
 
 Backup:
-
 ```
-./tool.sh backup --dev
 ./tool.sh backup --prod
+./tool.sh backup --dev
 ```
 
-Restore (wrapper target DEV only):
+Prod → Dev:
+```
+./tool.sh sync-dev --dev
+./tool.sh refresh-dev --dev
+./tool.sh restore-prod --dev
+```
 
+Dev Restore:
 ```
 ./tool.sh restore --dev
-./tool.sh list --dev
+scripts/restore_db.sh --target dev --latest   # latest dev (not shown in menu)
+```
+
+Listing:
+```
 ./tool.sh list --prod
+./tool.sh list --dev
 ```
 
-Manual PROD restore:
-
-```
-scripts/restore_db.sh --target prod --latest
-```
-
-Drop (wrapper DEV only):
-
+Drop (DEV only):
 ```
 ./tool.sh drop --dev
 ```
 
 Manual PROD drop:
-
 ```
 scripts/drop_all_tables.sh --prod
 ```
 
-Dependencies:
+Manual PROD self-restore:
+```
+scripts/restore_db.sh --target prod --latest
+```
 
+Dependencies:
 ```
 sudo ./tool.sh deps --install
 ./tool.sh deps --check

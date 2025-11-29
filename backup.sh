@@ -12,11 +12,16 @@ SCRIPTPATH=$(cd "${0%/*}" && pwd -P)
 ENVIRONMENT=""          # dev | prod
 FOLDER_NAME=""          # dev | prod
 CONFIG_BASENAME=""      # dev.env | prod.env
-CONFIG_FILE_PATH="${CONFIG_FILE_PATH:-}"          # can be overridden from outside
-BACKUP_ROOT="${BACKUP_ROOT:-$SCRIPTPATH/backups}" # can be overridden from outside
+CONFIG_FILE_PATH="${CONFIG_FILE_PATH:-}"          # overridden later by env selection
 
-# Logging
-LOG_FILE="${LOG_FILE:-$SCRIPTPATH/backup.log}"    # log file path
+# Global (non-secret) config file path (override with GLOBAL_CONFIG_FILE)
+GLOBAL_CONFIG_FILE="${GLOBAL_CONFIG_FILE:-$SCRIPTPATH/config.ini}"
+
+# Defer defaults until after loading config.ini; allow env > config > default precedence
+BACKUP_ROOT="${BACKUP_ROOT:-}"
+LOG_FILE="${LOG_FILE:-}"
+TIMESTAMP_FORMAT="${TIMESTAMP_FORMAT:-}"
+PROGRESS_INTERVAL="${PROGRESS_INTERVAL:-}"
 
 ################################
 ########### LOGGING ############
@@ -81,6 +86,29 @@ init_log() {
     }
     _log_to_file "----------------------------------------"
     _log_to_file "New run of $SCRIPT_NAME at $(date '+%Y-%m-%d %H:%M:%S')"
+}
+
+################################
+######## LOAD SETTINGS #########
+################################
+
+load_settings() {
+    local file="$GLOBAL_CONFIG_FILE"
+    [[ -r "$file" ]] || return 0
+    while IFS='=' read -r raw_key raw_val; do
+        local key val
+        key="$(echo "$raw_key" | sed 's/[[:space:]]//g')"
+        [[ -z "$key" ]] && continue
+        [[ "$key" =~ ^[#;] ]] && continue
+        [[ "$key" =~ ^\[.*\]$ ]] && continue
+        val="$(echo "${raw_val}" | sed 's/^ *//;s/ *$//')"
+        case "$key" in
+            BACKUP_ROOT)       [[ -z "$BACKUP_ROOT" ]] && BACKUP_ROOT="$val" ;;
+            LOG_FILE)          [[ -z "$LOG_FILE" ]] && LOG_FILE="$val" ;;
+            TIMESTAMP_FORMAT)  [[ -z "$TIMESTAMP_FORMAT" ]] && TIMESTAMP_FORMAT="$val" ;;
+            PROGRESS_INTERVAL) [[ -z "$PROGRESS_INTERVAL" ]] && PROGRESS_INTERVAL="$val" ;;
+        esac
+    done < "$file"
 }
 
 ################################
@@ -213,7 +241,7 @@ backup_db() {
     ensure_dependencies
 
     local now
-    now=$(date +"%Y-%m-%d-%H-%M")
+    now=$(date +"${TIMESTAMP_FORMAT:-%Y-%m-%d-%H-%M}")
     local backup_folder
     backup_folder=$(create_backup_folder "$now")
 

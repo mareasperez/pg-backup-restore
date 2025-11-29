@@ -13,7 +13,13 @@ ENVIRONMENT=""
 FOLDER_NAME=""          
 CONFIG_BASENAME=""      
 CONFIG_FILE_PATH="${CONFIG_FILE_PATH:-}"
-BACKUP_ROOT="${BACKUP_ROOT:-$SCRIPTPATH/backups}"
+
+# Global config (non-secret) file path (override with GLOBAL_CONFIG_FILE)
+GLOBAL_CONFIG_FILE="${GLOBAL_CONFIG_FILE:-$SCRIPTPATH/config.ini}"
+
+# Defer defaults until after config load (env > config > default)
+BACKUP_ROOT="${BACKUP_ROOT:-}"
+TIMESTAMP_FORMAT="${TIMESTAMP_FORMAT:-}"
 
 backup_file=""
 metadata_file=""
@@ -43,6 +49,27 @@ Strict safety rules (ONLY for --prod):
          2) Type the exact database name
 
 EOF
+}
+
+################################
+######## LOAD SETTINGS #########
+################################
+
+load_settings() {
+    local file="$GLOBAL_CONFIG_FILE"
+    [[ -r "$file" ]] || return 0
+    while IFS='=' read -r raw_key raw_val; do
+        local key val
+        key="$(echo "$raw_key" | sed 's/[[:space:]]//g')"
+        [[ -z "$key" ]] && continue
+        [[ "$key" =~ ^[#;] ]] && continue
+        [[ "$key" =~ ^\[.*\]$ ]] && continue
+        val="$(echo "${raw_val}" | sed 's/^ *//;s/ *$//')"
+        case "$key" in
+            BACKUP_ROOT)      [[ -z "$BACKUP_ROOT" ]] && BACKUP_ROOT="$val" ;;
+            TIMESTAMP_FORMAT) [[ -z "$TIMESTAMP_FORMAT" ]] && TIMESTAMP_FORMAT="$val" ;;
+        esac
+    done < "$file"
 }
 
 ################################
@@ -240,6 +267,9 @@ restore_db() {
 
 main() {
     SECONDS=0
+    load_settings
+    : "${BACKUP_ROOT:=$SCRIPTPATH/backups}"
+    : "${TIMESTAMP_FORMAT:=%Y-%m-%d-%H-%M}"  # Currently used only for reference; folder parsing unchanged
     parse_args "$@"
     load_config
     load_latest_backup_or_select
