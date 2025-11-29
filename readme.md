@@ -90,7 +90,7 @@ Dependencies:
 Run everything via the central entry point (each operation now performs a pre-connection test `SELECT 1` before proceeding):
 
 ```
-./tool.sh backup --dev
+./tool.sh backup --dev   # shows live progress (size, speed, ETA if possible)
 ./tool.sh backup --prod
 
 ./tool.sh restore --dev

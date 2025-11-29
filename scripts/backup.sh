@@ -73,12 +73,61 @@ backup_db() {
   local now; now=$(date +"%Y-%m-%d-%H-%M"); local backup_folder; backup_folder=$(create_backup_folder "$now")
   local backup_file="${backup_folder}/${FOLDER_NAME}.dump"; local metadata_file="${backup_folder}/${FOLDER_NAME}.meta"; local transfer_file="${SCRIPTPATH}/../transfer.dump"
   log "Starting backup."; log "Database: $DB_DATABASE"; log "Host: $DB_HOST"; log "Backup file: $backup_file"; SECONDS=0
-  export PGPASSWORD="$DB_PASSWORD"
-  # Run pg_dump in foreground to capture immediate failure status
-  if ! pg_dump -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" -p "${DB_PORT:-5432}" -Fc --create -f "$backup_file" 2>&1 | sed 's/^/[pg_dump] /'; then
-    error "pg_dump failed. See preceding [pg_dump] lines for context."
+  # Estimar tamaño bruto (no comprimido) para ETA
+  local db_estimated_size=0
+  if command -v psql >/dev/null 2>&1; then
+    db_estimated_size=$(PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" -p "${DB_PORT:-5432}" -t -A -c "SELECT pg_database_size('$DB_DATABASE');" 2>/dev/null || echo 0)
+    [[ -n "$db_estimated_size" ]] || db_estimated_size=0
   fi
+  if (( db_estimated_size > 0 )); then
+    local est_mb=$(awk -v b="$db_estimated_size" 'BEGIN{printf "%.2f", b/1024/1024}')
+    log "Estimated raw database size: ${est_mb} MB (custom format will differ)"
+  else
+    log "Raw size estimate unavailable; ETA will show '-'"
+  fi
+  export PGPASSWORD="$DB_PASSWORD"
+  (
+    pg_dump -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" -p "${DB_PORT:-5432}" -Fc --create -f "$backup_file" 2>&1 | sed 's/^/[pg_dump] /'
+  ) &
+  local pid=$!
+  local last_size=0
+  local avg_speed=0
+  while kill -0 "$pid" 2>/dev/null; do
+    local elapsed=$SECONDS
+    local m=$(( elapsed / 60 ))
+    local s=$(( elapsed % 60 ))
+    local eta="-"
+    if [[ -f "$backup_file" ]]; then
+      local size_bytes
+      size_bytes=$(stat --format="%s" "$backup_file" 2>/dev/null || echo 0)
+      local size_mb=$(awk -v b="$size_bytes" 'BEGIN{printf "%.2f", b/1024/1024}')
+      local delta=$(( size_bytes - last_size ))
+      last_size=$size_bytes
+      # actualizar velocidad promedio simple (total/elapsed)
+      if (( elapsed > 0 )); then
+        avg_speed=$(( size_bytes / elapsed ))
+      fi
+      if (( db_estimated_size > 0 && avg_speed > 0 && size_bytes < db_estimated_size )); then
+        local remaining=$(( db_estimated_size - size_bytes ))
+        local eta_sec=$(( remaining / avg_speed ))
+        if (( eta_sec >= 0 )); then
+          eta=$(printf "%02d:%02d" $(( eta_sec/60 )) $(( eta_sec%60 )))
+        fi
+      fi
+      local delta_kb=$(awk -v d="$delta" 'BEGIN{printf "%.1f", d/1024}')
+      printf "Elapsed %02d:%02d | Size %s MB | +%s KB/s | ETA %s\r" "$m" "$s" "$size_mb" "$delta_kb" "$eta"
+    else
+      printf "Elapsed %02d:%02d | awaiting dump creation...\r" "$m" "$s"
+    fi
+    sleep 1
+  done
+  wait "$pid"
+  local rc=$?
+  printf "\n"
   unset PGPASSWORD
+  if (( rc != 0 )); then
+    error "pg_dump failed with exit code $rc. See [pg_dump] lines above."
+  fi
   log "pg_dump completed successfully."
   cp -f "$backup_file" "$transfer_file" || error "Failed to copy to transfer.dump"
   log "Copied backup to: $transfer_file"
