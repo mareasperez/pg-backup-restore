@@ -11,6 +11,11 @@ log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 error() { log "ERROR: $*"; exit 1; }
 usage() { cat <<EOF
 Usage: $SCRIPT_NAME [--dev|-d|--prod|-p] [--yes] [--skip-backup]
+
+WARNING:
+  Destructive schema reset (drop) is restricted to DEV in the wrapper (tool.sh).
+  To perform a PROD drop you must call this script directly: scripts/drop_all_tables.sh --prod
+  Consider taking a manual backup first even though script auto-backups by default.
 EOF
 }
 

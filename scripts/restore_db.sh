@@ -4,59 +4,67 @@ set -euo pipefail
 SCRIPT_NAME=$(basename "$0")
 SCRIPTPATH=$(cd "${0%/*}" && pwd -P)
 
-ENVIRONMENT=""
-FOLDER_NAME=""
-CONFIG_BASENAME=""
+TARGET_ENV=""
+SOURCE_ENV=""  # optional; defaults to TARGET_ENV if not set
 CONFIG_FILE_PATH="${CONFIG_FILE_PATH:-}"
 BACKUP_ROOT="${BACKUP_ROOT:-$SCRIPTPATH/../backups}"
 
 backup_file=""; metadata_file=""; LIST_ONLY=0; FORCE_LATEST=0
+
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 error() { log "ERROR: $*"; exit 1; }
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--dev|-d|--prod|-p] [--list] [--latest] [--no-progress] [--show-lines]
+Usage: $SCRIPT_NAME --target <dev|prod> [--source <dev|prod>] [--list] [--latest] [--no-progress] [--show-lines]
+
+WARNING:
+  Wrapper (tool.sh) restricts destructive operations to DEV (target=dev).
+  Direct PROD restore allowed only by running this script manually.
 
 Flags:
-  --dev|-d   Select dev environment
-  --prod|-p  Select prod environment
-  --list     List backups for env and exit (no restore)
-  --latest   Use latest backup without the (y/n) prompt
-  --no-progress   Disable progress/ETA display during restore
-  --show-lines    Show verbose pg_restore output lines (normally suppressed when progress active)
+  --target <dev|prod>   Destination database environment (required)
+  --source <dev|prod>   Backup source environment (optional; defaults to target)
+  --list                List backups for source and exit (no restore)
+  --latest              Use latest backup without the (y/n) prompt
+  --no-progress         Disable progress/ETA display during restore
+  --show-lines          Show verbose pg_restore output lines (normally suppressed when progress active)
   -h|--help  Show help
 
 Env vars:
-  CONFIG_FILE_PATH  Optional path to env file
+  CONFIG_FILE_PATH  Optional path to target env file
   BACKUP_ROOT       Base backups dir (default: $BACKUP_ROOT)
 EOF
 }
 
 parse_args() {
-  local env_set=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dev|-d) ENVIRONMENT="dev"; FOLDER_NAME="dev"; CONFIG_BASENAME="dev.env"; env_set=1 ;;
-      --prod|-p) ENVIRONMENT="prod"; FOLDER_NAME="prod"; CONFIG_BASENAME="prod.env"; env_set=1 ;;
+      --target) shift; TARGET_ENV="${1:-}" ;;
+      --source) shift; SOURCE_ENV="${1:-}" ;;
       --list) LIST_ONLY=1 ;;
       --latest) FORCE_LATEST=1 ;;
       --no-progress) NO_PROGRESS=1 ;;
       --show-lines) SHOW_LINES=1 ;;
       -h|--help) usage; exit 0 ;;
+      --dev|-d|--prod|-p|--from-prod) error "Deprecated flag: use --target and optional --source instead" ;;
       *) error "Unknown argument: $1" ;;
     esac; shift
   done
-  (( env_set == 1 )) || error "Specify --dev/-d or --prod/-p"
+  [[ -n "$TARGET_ENV" ]] || error "--target <dev|prod> is required"
+  if [[ -z "$SOURCE_ENV" ]]; then SOURCE_ENV="$TARGET_ENV"; fi
+  [[ "$TARGET_ENV" =~ ^(dev|prod)$ ]] || error "Invalid --target value: $TARGET_ENV"
+  [[ "$SOURCE_ENV" =~ ^(dev|prod)$ ]] || error "Invalid --source value: $SOURCE_ENV"
 }
 
 load_config() {
-  [[ -z "$CONFIG_FILE_PATH" ]] && CONFIG_FILE_PATH="${SCRIPTPATH}/../${CONFIG_BASENAME}"
-  [[ -r "$CONFIG_FILE_PATH" ]] || error "Could not load config: $CONFIG_FILE_PATH"
-  log "Loading config from: $CONFIG_FILE_PATH"
+  local cfg_basename="${TARGET_ENV}.env"
+  [[ -z "$CONFIG_FILE_PATH" ]] && CONFIG_FILE_PATH="${SCRIPTPATH}/../${cfg_basename}"
+  [[ -r "$CONFIG_FILE_PATH" ]] || error "Could not load target config: $CONFIG_FILE_PATH"
+  log "Loading target config from: $CONFIG_FILE_PATH"
   set -a; source "$CONFIG_FILE_PATH"; set +a
-  log "Environment: $ENVIRONMENT"
+  log "Target environment: $TARGET_ENV | Source backups: $SOURCE_ENV"
   echo "========================================"
   echo "DB_DATABASE: ${DB_DATABASE:-<not set>}"
   echo "DB_HOST:     ${DB_HOST:-<not set>}"
@@ -95,7 +103,7 @@ estimate_total_items() {
 }
 
 list_backups() {
-  local base_dir="${BACKUP_ROOT}/${FOLDER_NAME}"
+  local base_dir="${BACKUP_ROOT}/${SOURCE_ENV}"
   [[ -d "$base_dir" ]] || error "Backup directory does not exist: $base_dir"
   log "Listing backups under: $base_dir"
   local -a backup_dirs=(); while IFS= read -r -d '' dir; do backup_dirs+=("$dir"); done < <(find "$base_dir" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
@@ -112,13 +120,13 @@ list_backups() {
 
 list_backups_and_select() {
   list_backups
-  local base_dir="${BACKUP_ROOT}/${FOLDER_NAME}"; local selection=""; local i=1; local -a valid_dirs=()
-  while IFS= read -r -d '' dir; do [[ -f "${dir}/${FOLDER_NAME}.dump" ]] && valid_dirs+=("$dir"); done < <(find "$base_dir" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+  local base_dir="${BACKUP_ROOT}/${SOURCE_ENV}"; local selection=""; local i=1; local -a valid_dirs=()
+  while IFS= read -r -d '' dir; do [[ -f "${dir}/${SOURCE_ENV}.dump" ]] && valid_dirs+=("$dir"); done < <(find "$base_dir" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
   while true; do
     read -r -p "Enter the number of the backup you want to restore: " selection
     if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#valid_dirs[@]} )); then
       local chosen_dir="${valid_dirs[$((selection-1))]}"
-      backup_file="${chosen_dir}/${FOLDER_NAME}.dump"; metadata_file="${chosen_dir}/${FOLDER_NAME}.meta"
+      backup_file="${chosen_dir}/${SOURCE_ENV}.dump"; metadata_file="${chosen_dir}/${SOURCE_ENV}.meta"
       log "Selected backup: $(basename "$chosen_dir")"
       if [[ -f "$metadata_file" ]]; then echo "Backup metadata:"; cat "$metadata_file"; else echo "Backup metadata: <missing>"; fi
       break
@@ -128,11 +136,11 @@ list_backups_and_select() {
 }
 
 load_latest_backup_or_select() {
-  local base_dir="${BACKUP_ROOT}/${FOLDER_NAME}"; [[ -d "$base_dir" ]] || error "Backup directory does not exist: $base_dir"
+  local base_dir="${BACKUP_ROOT}/${SOURCE_ENV}"; [[ -d "$base_dir" ]] || error "Backup directory does not exist: $base_dir"
   log "Looking for the latest backup in: $base_dir"
   local latest_backup_dir; latest_backup_dir=$(ls -td "${base_dir}"/* 2>/dev/null | head -n 1 || true)
   if [[ -z "$latest_backup_dir" ]]; then echo "No backups found in $base_dir"; list_backups_and_select; return; fi
-  backup_file="${latest_backup_dir}/${FOLDER_NAME}.dump"; metadata_file="${latest_backup_dir}/${FOLDER_NAME}.meta"
+  backup_file="${latest_backup_dir}/${SOURCE_ENV}.dump"; metadata_file="${latest_backup_dir}/${SOURCE_ENV}.meta"
   if [[ ! -f "$backup_file" ]]; then echo "Latest backup folder does not contain a .dump file: $latest_backup_dir"; list_backups_and_select; return; fi
   echo "Latest backup found: $(basename "$latest_backup_dir")"; [[ -f "$metadata_file" ]] && { echo "Backup metadata:"; cat "$metadata_file"; } || echo "Backup metadata: <missing>"
   if (( FORCE_LATEST == 0 )); then
@@ -142,7 +150,7 @@ load_latest_backup_or_select() {
 }
 
 confirm_restore() {
-  echo; echo "You are about to RESTORE database:"; echo "  Environment = $ENVIRONMENT"; echo "  DB_DATABASE = $DB_DATABASE"; echo "  DB_HOST     = $DB_HOST"; echo "  DB_USERNAME = $DB_USERNAME"; echo "  Backup file = $backup_file"; echo
+  echo; echo "You are about to RESTORE database:"; echo "  Target environment = $TARGET_ENV"; echo "  Source backup env  = $SOURCE_ENV"; echo "  DB_DATABASE        = $DB_DATABASE"; echo "  DB_HOST            = $DB_HOST"; echo "  DB_USERNAME        = $DB_USERNAME"; echo "  Backup file        = $backup_file"; echo
   read -r -p "Type the database name ('$DB_DATABASE') to confirm restore, or anything else to abort: " answer
   [[ "$answer" == "$DB_DATABASE" ]] || { log "Confirmation failed. Aborting."; exit 1; }
   log "Confirmation accepted. Proceeding with restore."
@@ -152,7 +160,7 @@ restore_db() {
   validate_required_env; require_cmd "pg_restore"; [[ -n "$backup_file" && -f "$backup_file" ]] || error "Backup file not set or missing: $backup_file"
   confirm_restore
   local port_arg=(); [[ -n "${DB_PORT:-}" ]] && port_arg=(-p "$DB_PORT")
-  log "Starting restore at: $(date)"; log "Connecting to database: $DB_DATABASE on $DB_HOST"
+  log "Starting restore at: $(date)"; log "Connecting to target database: $DB_DATABASE on $DB_HOST (source backups: $SOURCE_ENV)"
 
   if (( NO_PROGRESS == 1 )); then
     PGPASSWORD="$DB_PASSWORD" pg_restore -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" "${port_arg[@]}" --clean --verbose -F c "$backup_file"

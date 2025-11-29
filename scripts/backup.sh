@@ -33,6 +33,11 @@ Env overrides:
   LOG_FILE          custom log file path
 Dependencies:
   pg_dump, stat, md5sum (optional: crc32)
+
+Safety:
+  Backup is non-destructive and allowed for PROD via tool.sh.
+  Destructive operations (restore/drop) are limited to DEV in the wrapper.
+  To restore or drop on PROD you must invoke scripts directly.
 EOF
 }
 

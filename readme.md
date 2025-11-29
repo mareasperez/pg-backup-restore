@@ -90,22 +90,26 @@ Dependencies:
 Run everything via the central entry point (each operation now performs a pre-connection test `SELECT 1` before proceeding):
 
 ```
-./tool.sh backup --dev   # shows live progress (size, speed, ETA if possible)
-./tool.sh backup --prod
+./tool.sh backup --dev          # shows live progress (size, speed, ETA)
+./tool.sh backup --prod         # non-destructive read
 
-./tool.sh restore --dev
-./tool.sh restore --prod
-./tool.sh restore-latest --dev   # skip choose, still confirms DB name
-./tool.sh restore-latest --prod
+./tool.sh restore --dev         # destructive (DEV only in wrapper)
+./tool.sh restore-latest --dev  # latest dev backup (still confirms DB name)
 
-./tool.sh list --dev      # show backups without restoring
-./tool.sh list --prod
+./tool.sh list --dev            # list backups (safe)
+./tool.sh list --prod           # list backups (safe)
 
-./tool.sh drop --dev --yes
-./tool.sh drop --prod --skip-backup   # dangerous
+./tool.sh drop --dev --yes      # destructive (DEV only)
 
 ./tool.sh deps --check
 sudo ./tool.sh deps --install
+```
+
+Manual PROD destructive operations (run underlying scripts directly):
+
+```
+scripts/restore_db.sh --prod
+scripts/drop_all_tables.sh --prod
 ```
 
 Flags:
@@ -151,39 +155,59 @@ Future Improvements (not yet implemented): smoothing speed, HH:MM:SS formatting 
 
 ---
 
+# 4. Wrapper Restrictions & Refresh
+
+To reduce risk, the interactive wrapper `tool.sh` forbids destructive production actions:
+
+- Allowed on PROD via wrapper: backups, listing backups, dependency checks.
+- Blocked on PROD via wrapper: restore, drop.
+- Manual override: call underlying scripts directly for PROD restore or drop (still requires confirmation & pre-drop backup).
+
+Rationale: avoiding accidental production data loss by requiring deliberate, explicit manual script invocation for destructive actions.
+
+### Sync / Refresh DEV from PROD (Source/Target Model)
+
+Wrapper shortcut (latest prod -> dev):
+```
+./tool.sh refresh-dev   # internally: --target dev --source prod --latest
+```
+
+Manual equivalents:
+```
+scripts/restore_db.sh --target dev --source prod --latest
+scripts/restore_db.sh --target dev --source prod          # reject latest to choose specific
+```
+
+Safety:
+- Requires typing the target (DEV) database name.
+- Reads PROD backup artifacts only; never writes to PROD.
+- Shows PROD metadata before confirmation.
+
 # 5. Restore Script (`scripts/restore_db.sh`)
 
+Source/Target interface:
 ```
-./restore_db.sh --dev
-./restore_db.sh --prod
+./restore_db.sh --target dev                # dev <- dev (interactive latest)
+./restore_db.sh --target dev --source prod  # dev <- prod (interactive latest)
+./restore_db.sh --target dev --source prod --latest  # auto latest prod
+./restore_db.sh --target prod --latest      # prod <- prod (manual only)
 ```
 
 Flow:
+1. Load target env file (`<target>.env`).
+2. Use backups in `backups/<source>/`.
+3. Select latest (or list/select).
+4. Show metadata (source env) + confirm typing target DB name.
+5. Execute `pg_restore --clean --verbose -F c` with progress.
 
-1. Finds the latest backup  
-2. Shows metadata  
-3. If rejected → lists all backups  
-     4. Requires typing DB name to confirm restore  
-
-Restores using `pg_restore --clean --verbose -F c`.
-
-### Restore Progress & ETA
-
-By default a dynamic progress line appears:
-
+Progress & ETA
 ```
 Elapsed mm:ss | Items current/total | ETA mm:ss (or HH:MM:SS)
 ```
-
 Details:
-- Total: counted from `pg_restore -l <dump>` (TOC entries). If count unavailable shows `Items x/0` and ETA is `-`.
-- Items increment when a TOC entry is processed (creating, processing, restoring, setting).
-- ETA is based on average items/sec after 5s; suppressed (`-`) if unstable or oversized (>12h).
-- Use `--no-progress` to disable progress; `--show-lines` to also display the last verbose line inline.
-
-Flags added:
-- `--no-progress` disables the progress/ETA line.
-- `--show-lines` shows the most recent pg_restore verbose line together with counters.
+- Total from `pg_restore -l` (TOC entries). If unavailable ETA is `-`.
+- ETA starts after 5s based on items/sec; suppressed if oversized (>12h) or unstable.
+- `--no-progress` disables line; `--show-lines` adds last verbose line.
 
 List-only mode:
 
@@ -279,20 +303,30 @@ Backup:
 ./tool.sh backup --prod
 ```
 
-Restore:
+Restore (wrapper target DEV only):
 
 ```
 ./tool.sh restore --dev
-./tool.sh restore --prod
 ./tool.sh list --dev
 ./tool.sh list --prod
 ```
 
-Drop:
+Manual PROD restore:
+
+```
+scripts/restore_db.sh --target prod --latest
+```
+
+Drop (wrapper DEV only):
 
 ```
 ./tool.sh drop --dev
-./tool.sh drop --prod
+```
+
+Manual PROD drop:
+
+```
+scripts/drop_all_tables.sh --prod
 ```
 
 Dependencies:
