@@ -26,8 +26,8 @@ Usage: $SCRIPT_NAME <command> [--dev|--prod] [options]
 
 Commands:
   backup          Run a backup for selected env
-  restore         Restore from latest (or pick) backup
-  restore-latest  Restore latest directly (still confirms DB name)
+  restore         Restore (DEV only) from latest (or pick) backup
+  restore-latest  Restore latest (DEV only) directly (still confirms DB name)
   drop            Drop all tables (auto-backup first)
   list            Show backups for env (no restore)
   deps            Check/install dependencies
@@ -45,8 +45,9 @@ Options:
 
 Examples:
   $SCRIPT_NAME backup --dev
-  $SCRIPT_NAME restore --prod
-  $SCRIPT_NAME restore-latest --prod
+  $SCRIPT_NAME backup --prod
+  $SCRIPT_NAME restore --dev
+  $SCRIPT_NAME restore-latest --dev
   $SCRIPT_NAME drop --dev --yes
   $SCRIPT_NAME list --dev
   $SCRIPT_NAME deps --check
@@ -100,8 +101,11 @@ cmd_restore() {
   require_script "$RESTORE_SCRIPT"
   read -r ENV_ARG CONFIG_FILE_PATH BACKUP_ROOT REST <<< "$(parse_common_flags "$@")"
   [[ -n "$ENV_ARG" ]] || error "Select environment with --dev or --prod"
+  if [[ "$ENV_ARG" == "--prod" ]]; then
+    error "Prod restore disabled in tool wrapper. Run scripts/restore_db.sh manually if absolutely required."
+  fi
   pass_config_env
-  log "Dispatching: restore $ENV_ARG"
+  log "Dispatching: restore (dev only) $ENV_ARG"
   "$RESTORE_SCRIPT" "$ENV_ARG"
 }
 
@@ -109,8 +113,11 @@ cmd_restore_latest() {
   require_script "$RESTORE_SCRIPT"
   read -r ENV_ARG CONFIG_FILE_PATH BACKUP_ROOT REST <<< "$(parse_common_flags "$@")"
   [[ -n "$ENV_ARG" ]] || error "Select environment with --dev or --prod"
+  if [[ "$ENV_ARG" == "--prod" ]]; then
+    error "Prod restore disabled in tool wrapper. Run scripts/restore_db.sh manually if absolutely required."
+  fi
   pass_config_env
-  log "Dispatching: restore-latest $ENV_ARG"
+  log "Dispatching: restore-latest (dev only) $ENV_ARG"
   "$RESTORE_SCRIPT" "$ENV_ARG" --latest
 }
 
@@ -142,35 +149,31 @@ cmd_deps() {
 
 main() {
   if (( $# < 1 )); then
-    echo "Select an option:"
+    echo "Select an option (prod restore disabled):"
     echo "  1) Backup --dev"
     echo "  2) Backup --prod"
     echo "  3) Restore --dev"
-    echo "  4) Restore --prod"
-    echo "  5) Restore latest --dev"
-    echo "  6) Restore latest --prod"
-    echo "  7) List backups --dev"
-    echo "  8) List backups --prod"
-    echo "  9) Drop --dev"
-    echo " 10) Drop --prod"
-    echo " 11) Deps --check"
-    echo " 12) Deps --install"
+    echo "  4) Restore latest --dev"
+    echo "  5) List backups --dev"
+    echo "  6) List backups --prod"
+    echo "  7) Drop --dev"
+    echo "  8) Drop --prod"
+    echo "  9) Deps --check"
+    echo " 10) Deps --install"
     echo " 11) Settings (set --config / --backups)"
     read -r -p "Enter number: " choice
     case "$choice" in
       1) cmd_backup --dev ;;
       2) cmd_backup --prod ;;
       3) cmd_restore --dev ;;
-      4) cmd_restore --prod ;;
-      5) cmd_restore_latest --dev ;;
-      6) cmd_restore_latest --prod ;;
-      7) cmd_list --dev ;;
-      8) cmd_list --prod ;;
-      9) cmd_drop --dev ;;
-      10) cmd_drop --prod ;;
-      11) cmd_deps --check ;;
-      12) cmd_deps --install ;;
-      13)
+      4) cmd_restore_latest --dev ;;
+      5) cmd_list --dev ;;
+      6) cmd_list --prod ;;
+      7) cmd_drop --dev ;;
+      8) cmd_drop --prod ;;
+      9) cmd_deps --check ;;
+      10) cmd_deps --install ;;
+      11)
         echo "Current overrides:"
         echo "  CONFIG_FILE_PATH = ${CONFIG_FILE_PATH:-<none>}"
         echo "  BACKUP_ROOT      = ${BACKUP_ROOT:-<none>}"
