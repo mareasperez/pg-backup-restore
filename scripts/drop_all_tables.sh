@@ -43,6 +43,14 @@ validate_required_env() {
 }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || error "Required command '$1' not found in PATH."; }
 
+test_connection() {
+  require_cmd "psql"
+  local port="${DB_PORT:-5432}"
+  log "Testing connectivity to $DB_HOST:$port ($DB_DATABASE)"
+  PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" -p "$port" -t -A -c 'SELECT 1;' >/dev/null 2>&1 || error "Connectivity test failed (SELECT 1). Aborting drop operation."
+  log "Connectivity OK."
+}
+
 confirm_dangerous_operation() {
   (( AUTO_CONFIRM == 1 )) && { log "Auto-confirm enabled (--yes)."; return; }
   echo; echo "!!! DANGER !!!"; echo "You are about to DROP ALL TABLES:"; echo "  Environment = $ENVIRONMENT"; echo "  DB_DATABASE = $DB_DATABASE"; echo "  DB_HOST     = $DB_HOST"; echo "  DB_USERNAME = $DB_USERNAME"; echo; read -r -p "Type the database name ('$DB_DATABASE') to confirm, or anything else to abort: " answer; [[ "$answer" == "$DB_DATABASE" ]] || { log "Confirmation failed. Aborting."; exit 1; }; log "Confirmation accepted."
@@ -57,7 +65,7 @@ run_backup_script() {
 }
 
 drop_all_tables() {
-  validate_required_env; require_cmd "psql"; confirm_dangerous_operation; run_backup_script
+  validate_required_env; test_connection; confirm_dangerous_operation; run_backup_script
   local port_arg=(); [[ -n "${DB_PORT:-}" ]] && port_arg=(-p "$DB_PORT")
   log "Dropping all tables in database: $DB_DATABASE"; log "Connecting to host: $DB_HOST"; log "Connecting with user: $DB_USERNAME"
   PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" "${port_arg[@]}" -v ON_ERROR_STOP=1 -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' || error "Failed to drop/recreate public schema."

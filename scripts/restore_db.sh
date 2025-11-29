@@ -62,6 +62,14 @@ load_config() {
   echo "========================================"
 }
 
+test_connection() {
+  require_cmd "psql"
+  local port="${DB_PORT:-5432}"
+  log "Testing connectivity to $DB_HOST:$port ($DB_DATABASE)"
+  PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" -p "$port" -t -A -c 'SELECT 1;' >/dev/null 2>&1 || error "Connectivity test failed (SELECT 1). Verify host/port/network or credentials."
+  log "Connectivity OK."
+}
+
 validate_required_env() {
   local missing=()
   for var in DB_DATABASE DB_HOST DB_USERNAME DB_PASSWORD; do
@@ -139,7 +147,14 @@ restore_db() {
 }
 
 main() {
-  SECONDS=0; parse_args "$@"; load_config; if (( LIST_ONLY == 1 )); then list_backups; exit 0; fi; load_latest_backup_or_select; restore_db; printf "Total time: %d minutes and %d seconds elapsed.\n" "$((SECONDS/60))" "$((SECONDS%60))"
+  SECONDS=0
+  parse_args "$@"
+  load_config
+  test_connection
+  if (( LIST_ONLY == 1 )); then list_backups; exit 0; fi
+  load_latest_backup_or_select
+  restore_db
+  printf "Total time: %d minutes and %d seconds elapsed.\n" "$((SECONDS/60))" "$((SECONDS%60))"
 }
 
 main "$@"
