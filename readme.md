@@ -127,6 +127,28 @@ Creates:
 - `transfer.dump`
 - Timestamped backup folders
 
+### Backup Progress & ETA
+
+During a backup a live progress line is shown:
+
+```
+Elapsed mm:ss | Size X.YZ MB | +Δ KB/s | ETA mm:ss
+```
+
+Details:
+- Size: current dump file size (custom format `-Fc`, may be smaller than raw DB size).
+- +Δ KB/s: growth in the last second (simple instantaneous delta).
+- ETA: estimated time to completion based on raw database size (`pg_database_size`) and average speed (bytes_so_far / elapsed). Shown as `-` when an estimate is unreliable (early phase or missing size).
+- Initial Delay: `pg_dump` may spend several seconds (catalog phase) before file grows; line displays `awaiting dump creation...` until size > 0.
+
+Limitations & Interpretation:
+- Early ETAs can be exaggerated or very large because compression and catalog phases distort average speed.
+- If speed is very low or raw size cannot be fetched, ETA is suppressed (`-`).
+- Raw size is uncompressed; final dump almost always finishes earlier than initial ETA suggests.
+- For long-running backups you can safely ignore ETA until a few MB have been written.
+
+Future Improvements (not yet implemented): smoothing speed, HH:MM:SS formatting for large ETAs, optional `--no-progress` flag.
+
 ---
 
 # 5. Restore Script (`scripts/restore_db.sh`)
