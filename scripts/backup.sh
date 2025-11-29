@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set -o errtrace
+trap 'rc=$?; log "ERROR trap: rc=$rc line=$LINENO cmd=$BASH_COMMAND"' ERR
+[[ "${BACKUP_DEBUG:-}" == "1" ]] && set -x
 # Wrapper: moved from repo root. See README.
 # Original content preserved.
 
@@ -19,10 +22,17 @@ error() { log "ERROR: $*"; exit 1; }
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME --dev | --prod
-Flags: --dev/-d, --prod/-p
-Env: CONFIG_FILE_PATH, BACKUP_ROOT, LOG_FILE
-Deps: pg_dump, stat, md5sum (optional: crc32)
+Usage: $SCRIPT_NAME --dev | --prod [--debug]
+Flags:
+  --dev|-d         Backup dev
+  --prod|-p        Backup prod
+  --debug          Verbose trace (or BACKUP_DEBUG=1)
+Env overrides:
+  CONFIG_FILE_PATH  custom env file path
+  BACKUP_ROOT       custom backups directory
+  LOG_FILE          custom log file path
+Dependencies:
+  pg_dump, stat, md5sum (optional: crc32)
 EOF
 }
 
@@ -34,7 +44,17 @@ set_env_dev() { log "Selected environment: DEV"; ENVIRONMENT="dev"; FOLDER_NAME=
 set_env_prod() { log "Selected environment: PROD"; ENVIRONMENT="prod"; FOLDER_NAME="prod"; CONFIG_BASENAME="prod.env"; }
 
 load_config() { [[ -z "$CONFIG_FILE_PATH" ]] && CONFIG_FILE_PATH="${SCRIPTPATH}/../${CONFIG_BASENAME}"; [[ -r "$CONFIG_FILE_PATH" ]] || error "Could not read config file: $CONFIG_FILE_PATH"; log "Loading config from: $CONFIG_FILE_PATH"; set -a; source "$CONFIG_FILE_PATH"; set +a; }
-validate_required_env() { local missing=(); for var in DB_HOST DB_USERNAME DB_PASSWORD DB_DATABASE; do [[ -z "${!var:-}" ]] && missing+=("$var"); done; (( ${#missing[@]} > 0 )) && error "Missing required environment variables: ${missing[*]}"; }
+validate_required_env() {
+  local missing=()
+  for var in DB_HOST DB_USERNAME DB_PASSWORD DB_DATABASE; do
+    if [[ -z "${!var:-}" ]]; then
+      missing+=("$var")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    error "Missing required environment variables: ${missing[*]}"
+  fi
+}
 
 create_backup_folder() { local now="$1"; local backup_folder="${BACKUP_ROOT}/${FOLDER_NAME}/${now}"; [[ -d "$backup_folder" ]] || { mkdir -p "$backup_folder"; log "Created backup folder: $backup_folder"; }; printf '%s\n' "$backup_folder"; }
 calculate_file_size() { stat --format="%s" "$1"; }
@@ -42,26 +62,50 @@ calculate_md5() { md5sum "$1" | awk '{ print $1 }'; }
 calculate_crc32() { local file="$1"; command -v crc32 >/dev/null 2>&1 && crc32 "$file" || printf 'N/A'; }
 show_elapsed_time() { local pid="$1"; local start_seconds=$SECONDS; while kill -0 "$pid" 2>/dev/null; do local elapsed=$(( SECONDS - start_seconds )); printf "Time elapsed: %02d:%02d (mm:ss)...\r" $((elapsed/60)) $((elapsed%60)); sleep 1; done; printf "\n"; }
 
+test_connection() {
+  log "Testing connectivity (SELECT 1)..."
+  PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" -p "${DB_PORT:-5432}" -t -A -c 'SELECT 1;' >/dev/null 2>&1 || error "Database connectivity test failed (psql SELECT 1). Check host/port/network/VPN/firewall."
+  log "Connectivity OK."
+}
+
 backup_db() {
-  validate_required_env; ensure_dependencies
+  validate_required_env; ensure_dependencies; test_connection
   local now; now=$(date +"%Y-%m-%d-%H-%M"); local backup_folder; backup_folder=$(create_backup_folder "$now")
   local backup_file="${backup_folder}/${FOLDER_NAME}.dump"; local metadata_file="${backup_folder}/${FOLDER_NAME}.meta"; local transfer_file="${SCRIPTPATH}/../transfer.dump"
   log "Starting backup."; log "Database: $DB_DATABASE"; log "Host: $DB_HOST"; log "Backup file: $backup_file"; SECONDS=0
-  (
-    export PGPASSWORD="$DB_PASSWORD"
-    pg_dump -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" -Fc --create -f "$backup_file"
-  ) & local pid=$!; show_elapsed_time "$pid"; wait "$pid"; log "pg_dump completed successfully."
-  cp -f "$backup_file" "$transfer_file"; log "Copied backup to: $transfer_file"
+  export PGPASSWORD="$DB_PASSWORD"
+  # Run pg_dump in foreground to capture immediate failure status
+  if ! pg_dump -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" -p "${DB_PORT:-5432}" -Fc --create -f "$backup_file" 2>&1 | sed 's/^/[pg_dump] /'; then
+    error "pg_dump failed. See preceding [pg_dump] lines for context."
+  fi
+  unset PGPASSWORD
+  log "pg_dump completed successfully."
+  cp -f "$backup_file" "$transfer_file" || error "Failed to copy to transfer.dump"
+  log "Copied backup to: $transfer_file"
   local file_size md5_checksum crc32_checksum; file_size=$(calculate_file_size "$backup_file"); md5_checksum=$(calculate_md5 "$backup_file"); crc32_checksum=$(calculate_crc32 "$backup_file")
   {
     echo "Backup date: $(date)"; echo "Environment: $ENVIRONMENT"; echo "Database: $DB_DATABASE"; echo "Host: $DB_HOST"; echo "Backup file: $backup_file"; echo "File size: ${file_size} bytes"; echo "MD5 checksum: $md5_checksum"; echo "CRC32 checksum: $crc32_checksum"; echo "Log file: $LOG_FILE"
-  } > "$metadata_file"; log "Metadata file created: $metadata_file"; local duration=$SECONDS; log "Backup finished. Total time: $((duration/60))m $((duration%60))s"
+  } > "$metadata_file" || error "Failed writing metadata file"
+  log "Metadata file created: $metadata_file"; local duration=$SECONDS; log "Backup finished. Total time: $((duration/60))m $((duration%60))s"
 }
 
 main() {
-  init_log; (( $# != 1 )) && { usage; exit 1; }
-  case "$1" in --dev|-d) set_env_dev ;; --prod|-p) set_env_prod ;; -h|--help) usage; exit 0 ;; *) error "Invalid argument: '$1'" ;; esac
-  load_config; backup_db
+  init_log
+  local debug_flag=0
+  local env_arg=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dev|-d) env_arg="dev" ;;
+      --prod|-p) env_arg="prod" ;;
+      --debug) BACKUP_DEBUG=1 ;;
+      -h|--help) usage; exit 0 ;;
+      *) error "Invalid argument: '$1'" ;;
+    esac; shift
+  done
+  [[ -n "$env_arg" ]] || { usage; exit 1; }
+  case "$env_arg" in dev) set_env_dev ;; prod) set_env_prod ;; esac
+  load_config
+  backup_db
 }
 
 main "$@"

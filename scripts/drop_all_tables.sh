@@ -30,7 +30,17 @@ parse_args() {
 }
 
 load_env_file() { [[ -f "$ENV_FILE" && -r "$ENV_FILE" ]] || error "Env file not readable: $ENV_FILE"; log "Environment selected: $ENVIRONMENT"; log "Loading env from: $ENV_FILE"; set -a; source "$ENV_FILE"; set +a; log "Env loaded"; echo "========================================"; echo "DB_DATABASE: ${DB_DATABASE:-<not set>}"; echo "DB_HOST:     ${DB_HOST:-<not set>}"; echo "DB_USERNAME: ${DB_USERNAME:-<not set>}"; echo "DB_PASSWORD: ${DB_PASSWORD:+********}"; echo "DB_PORT:     ${DB_PORT:-<default>}"; echo "========================================"; }
-validate_required_env() { local missing=(); for var in DB_DATABASE DB_HOST DB_USERNAME DB_PASSWORD; do [[ -z "${!var:-}" ]] && missing+=("$var"); done; (( ${#missing[@]} > 0 )) && error "Missing required env: ${missing[*]}"; }
+validate_required_env() {
+  local missing=()
+  for var in DB_DATABASE DB_HOST DB_USERNAME DB_PASSWORD; do
+    if [[ -z "${!var:-}" ]]; then
+      missing+=("$var")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    error "Missing required env: ${missing[*]}"
+  fi
+}
 require_cmd() { command -v "$1" >/dev/null 2>&1 || error "Required command '$1' not found in PATH."; }
 
 confirm_dangerous_operation() {

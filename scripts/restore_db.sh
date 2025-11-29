@@ -62,7 +62,17 @@ load_config() {
   echo "========================================"
 }
 
-validate_required_env() { local missing=(); for var in DB_DATABASE DB_HOST DB_USERNAME DB_PASSWORD; do [[ -z "${!var:-}" ]] && missing+=("$var"); done; (( ${#missing[@]} > 0 )) && error "Missing env vars: ${missing[*]}"; }
+validate_required_env() {
+  local missing=()
+  for var in DB_DATABASE DB_HOST DB_USERNAME DB_PASSWORD; do
+    if [[ -z "${!var:-}" ]]; then
+      missing+=("$var")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    error "Missing env vars: ${missing[*]}"
+  fi
+}
 require_cmd() { command -v "$1" >/dev/null 2>&1 || error "Required command '$1' not found"; }
 
 list_backups() {
