@@ -64,28 +64,8 @@ Examples:
  - Destructive operations (restore, drop) restricted to target DEV only.
  - Primary workflows (Prod -> Dev): 'sync-dev' (fresh), 'refresh-dev' (latest existing), 'restore-prod' (choose).
  - 'restore-latest' is available via CLI but omitted from menu for simplicity.
-cmd_sync_dev() {
-  require_script "$BACKUP_SCRIPT"
-  require_script "$RESTORE_SCRIPT"
-  pass_config_env
-  log "Dispatching: sync-dev (fresh prod backup -> dev restore)"
-  # 1. Fresh PROD backup
-  "$BACKUP_SCRIPT" --prod
-  # 2. Restore latest PROD backup into DEV
-  "$RESTORE_SCRIPT" --target dev --source prod --latest
-}
-
-cmd_restore_prod() {
-  require_script "$RESTORE_SCRIPT"
-  pass_config_env
-  log "Dispatching: restore-prod (choose prod backup -> dev)"
-  "$RESTORE_SCRIPT" --target dev --source prod
-}
-- To perform these on PROD you must manually invoke the underlying script, e.g.:
-  scripts/restore_db.sh --prod
-  scripts/drop_all_tables.sh --prod
-- This wrapper enforces the same safety prompts as underlying scripts.
-- Use --config to point at a custom env file when needed.
+ - To perform destructive operations on PROD you must manually invoke the underlying scripts.
+ - Use --config to point at a custom env file when needed.
 EOF
 }
 
@@ -152,6 +132,22 @@ cmd_refresh_dev() {
   pass_config_env
   log "Dispatching: refresh-dev source=prod target=dev"
   "$RESTORE_SCRIPT" --target dev --source prod --latest
+}
+
+cmd_sync_dev() {
+  require_script "$BACKUP_SCRIPT"
+  require_script "$RESTORE_SCRIPT"
+  pass_config_env
+  log "Dispatching: sync-dev (fresh prod backup -> dev restore)"
+  "$BACKUP_SCRIPT" --prod
+  "$RESTORE_SCRIPT" --target dev --source prod --latest
+}
+
+cmd_restore_prod() {
+  require_script "$RESTORE_SCRIPT"
+  pass_config_env
+  log "Dispatching: restore-prod (choose prod backup -> dev)"
+  "$RESTORE_SCRIPT" --target dev --source prod
 }
 
 cmd_list() {
