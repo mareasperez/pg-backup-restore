@@ -17,13 +17,15 @@ error() { log "ERROR: $*"; exit 1; }
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--dev|-d|--prod|-p] [--list]
+Usage: $SCRIPT_NAME [--dev|-d|--prod|-p] [--list] [--latest] [--no-progress] [--show-lines]
 
 Flags:
   --dev|-d   Select dev environment
   --prod|-p  Select prod environment
   --list     List backups for env and exit (no restore)
   --latest   Use latest backup without the (y/n) prompt
+  --no-progress   Disable progress/ETA display during restore
+  --show-lines    Show verbose pg_restore output lines (normally suppressed when progress active)
   -h|--help  Show help
 
 Env vars:
@@ -40,6 +42,8 @@ parse_args() {
       --prod|-p) ENVIRONMENT="prod"; FOLDER_NAME="prod"; CONFIG_BASENAME="prod.env"; env_set=1 ;;
       --list) LIST_ONLY=1 ;;
       --latest) FORCE_LATEST=1 ;;
+      --no-progress) NO_PROGRESS=1 ;;
+      --show-lines) SHOW_LINES=1 ;;
       -h|--help) usage; exit 0 ;;
       *) error "Unknown argument: $1" ;;
     esac; shift
@@ -82,6 +86,13 @@ validate_required_env() {
   fi
 }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || error "Required command '$1' not found"; }
+
+estimate_total_items() {
+  # Count TOC entries (exclude comments/blank lines). Fallback to 0 on error.
+  local count
+  count=$(pg_restore -l "$backup_file" 2>/dev/null | grep -vE '^(;|$)' | wc -l | tr -d ' ' || echo 0)
+  echo "$count"
+}
 
 list_backups() {
   local base_dir="${BACKUP_ROOT}/${FOLDER_NAME}"
@@ -142,12 +153,91 @@ restore_db() {
   confirm_restore
   local port_arg=(); [[ -n "${DB_PORT:-}" ]] && port_arg=(-p "$DB_PORT")
   log "Starting restore at: $(date)"; log "Connecting to database: $DB_DATABASE on $DB_HOST"
-  PGPASSWORD="$DB_PASSWORD" pg_restore -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" "${port_arg[@]}" --clean --verbose -F c "$backup_file"
+
+  if (( NO_PROGRESS == 1 )); then
+    PGPASSWORD="$DB_PASSWORD" pg_restore -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" "${port_arg[@]}" --clean --verbose -F c "$backup_file"
+    log "Restore completed successfully at: $(date)"; return
+  fi
+
+  local total_items processed_items eta_display last_line
+  total_items=$(estimate_total_items)
+  if (( total_items > 0 )); then
+    log "Total TOC items: $total_items"
+  else
+    log "Total TOC items unknown (ETA may be unavailable)."
+  fi
+
+  local tmp_log
+  tmp_log=$(mktemp)
+  SECONDS=0
+  # Run pg_restore in background, capturing stderr to tmp_log
+  (
+    PGPASSWORD="$DB_PASSWORD" pg_restore -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" "${port_arg[@]}" --clean --verbose -F c "$backup_file" 2>"$tmp_log" 1>&2
+  ) &
+  local pid=$!
+  processed_items=0
+  local prev_processed=0
+  while kill -0 "$pid" 2>/dev/null; do
+    local elapsed=$SECONDS
+    local m=$(( elapsed / 60 ))
+    local s=$(( elapsed % 60 ))
+    # Count lines indicating creation/processing
+    if (( total_items > 0 )); then
+      # Use grep -c for a stable integer count; fallback to 0
+      processed_items=$(grep -cE '^pg_restore: (creating|processing|restoring|setting)' "$tmp_log" 2>/dev/null || echo 0)
+    else
+      processed_items=$(grep -cE '^pg_restore:' "$tmp_log" 2>/dev/null || echo 0)
+    fi
+    # Sanitize to integer (handle rare formatting anomalies)
+    [[ "$processed_items" =~ ^[0-9]+$ ]] || processed_items=0
+    [[ "$m" =~ ^[0-9]+$ ]] || m=0
+    [[ "$s" =~ ^[0-9]+$ ]] || s=0
+    local speed=0
+    if (( elapsed > 5 && processed_items > 0 )); then
+      speed=$(( processed_items / elapsed ))
+    fi
+    eta_display="-"
+    if (( total_items > 0 && speed > 0 && processed_items < total_items )); then
+      local remaining=$(( total_items - processed_items ))
+      local eta_sec=$(( remaining / speed ))
+      if (( eta_sec >= 0 && eta_sec < 43200 )); then
+        local eh=$(( eta_sec / 3600 ))
+        local em=$(( (eta_sec % 3600) / 60 ))
+        local es=$(( eta_sec % 60 ))
+        [[ "$eh" =~ ^[0-9]+$ ]] || eh=0; [[ "$em" =~ ^[0-9]+$ ]] || em=0; [[ "$es" =~ ^[0-9]+$ ]] || es=0
+        if (( eh > 0 )); then
+          eta_display=$(printf "%02d:%02d:%02d" "$eh" "$em" "$es")
+        else
+          eta_display=$(printf "%02d:%02d" "$em" "$es")
+        fi
+      fi
+    fi
+    if (( SHOW_LINES == 1 )); then
+      last_line=$(tail -n 1 "$tmp_log" 2>/dev/null || echo "")
+    else
+      last_line=""
+    fi
+    if [[ -n "$last_line" ]]; then
+      printf "Elapsed %02d:%02d | Items %d/%d | ETA %s | %s\r" "$m" "$s" "$processed_items" "$total_items" "$eta_display" "$last_line"
+    else
+      printf "Elapsed %02d:%02d | Items %d/%d | ETA %s\r" "$m" "$s" "$processed_items" "$total_items" "$eta_display"
+    fi
+    sleep 1
+  done
+  wait "$pid"
+  local rc=$?
+  printf "\n"
+  if (( rc != 0 )); then
+    log "Restore failed with exit code $rc. Last lines:"; tail -n 10 "$tmp_log" >&2; rm -f "$tmp_log"; error "pg_restore finished with errors"
+  fi
+  rm -f "$tmp_log"
   log "Restore completed successfully at: $(date)"
 }
 
 main() {
   SECONDS=0
+  NO_PROGRESS=0
+  SHOW_LINES=0
   parse_args "$@"
   load_config
   test_connection

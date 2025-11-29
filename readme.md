@@ -167,6 +167,24 @@ Flow:
 
 Restores using `pg_restore --clean --verbose -F c`.
 
+### Restore Progress & ETA
+
+By default a dynamic progress line appears:
+
+```
+Elapsed mm:ss | Items current/total | ETA mm:ss (or HH:MM:SS)
+```
+
+Details:
+- Total: counted from `pg_restore -l <dump>` (TOC entries). If count unavailable shows `Items x/0` and ETA is `-`.
+- Items increment when a TOC entry is processed (creating, processing, restoring, setting).
+- ETA is based on average items/sec after 5s; suppressed (`-`) if unstable or oversized (>12h).
+- Use `--no-progress` to disable progress; `--show-lines` to also display the last verbose line inline.
+
+Flags added:
+- `--no-progress` disables the progress/ETA line.
+- `--show-lines` shows the most recent pg_restore verbose line together with counters.
+
 List-only mode:
 
 ```
