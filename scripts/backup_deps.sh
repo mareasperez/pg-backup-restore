@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DEPRECATED: use scripts/backup_deps.sh via tool.sh
+# Moved to scripts/; original behavior preserved.
 set -euo pipefail
 
 SCRIPT_NAME=$(basename "$0")
@@ -77,7 +77,7 @@ main() {
             install_pkg "libarchive-zip-perl" || {
                 echo "WARN: could not install 'libarchive-zip-perl'. 'crc32' will remain unavailable."
             }
-            echo "Done. You can now run ./backup.sh --dev or --prod"
+            echo "Done. You can now run ./tool.sh backup --dev or --prod"
             ;;
         *)
             usage

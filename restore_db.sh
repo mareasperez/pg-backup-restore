@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-
+# DEPRECATED: use scripts/restore_db.sh via tool.sh
 set -euo pipefail
 
 ################################

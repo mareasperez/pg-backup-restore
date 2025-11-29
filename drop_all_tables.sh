@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-
-# Exit on error, undefined var, and failed pipeline
+# DEPRECATED: use scripts/drop_all_tables.sh via tool.sh
 set -euo pipefail
 
 ################################

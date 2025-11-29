@@ -2,10 +2,11 @@
 
 This repository contains a safe and consistent set of scripts for:
 
-- **Backing up** PostgreSQL databases (`backup.sh`)
-- **Restoring** a chosen backup (`restore_db.sh`)
-- **Dropping all tables** (with automatic pre-drop backup) (`drop_all_tables.sh`)
-- **Installing/checking dependencies** (`backup_deps.sh`)
+- **Entry point** `tool.sh` to run all operations
+- **Backing up** PostgreSQL databases (`scripts/backup.sh`)
+- **Restoring** a chosen backup (`scripts/restore_db.sh`)
+- **Dropping all tables** (with automatic pre-drop backup) (`scripts/drop_all_tables.sh`)
+- **Installing/checking dependencies** (`scripts/backup_deps.sh`)
 
 The scripts are designed for Linux/WSL environments and use **dev/prod** flags for environment isolation.
 
@@ -14,14 +15,16 @@ The scripts are designed for Linux/WSL environments and use **dev/prod** flags f
 ## 📌 Folder Structure
 
 ```
-project/
- ├── backup.sh
- ├── restore_db.sh
- ├── drop_all_tables.sh
- ├── backup_deps.sh
- ├── dev.env
- ├── prod.env
- └── backups/
+ project/
+  ├── tool.sh
+  ├── dev.env
+  ├── prod.env
+  ├── scripts/
+  │   ├── backup.sh
+  │   ├── restore_db.sh
+  │   ├── drop_all_tables.sh
+  │   └── backup_deps.sh
+  └── backups/
       ├── dev/
       │    └── <TIMESTAMP>/
       │         ├── dev.dump
@@ -82,7 +85,33 @@ Dependencies:
 
 ---
 
-# 3. Backup Script (`backup.sh`)
+# 3. Central Entry (`tool.sh`)
+
+Run everything via the central entry point:
+
+```
+./tool.sh backup --dev
+./tool.sh backup --prod
+
+./tool.sh restore --dev
+./tool.sh restore --prod
+
+./tool.sh list --dev      # show backups without restoring
+./tool.sh list --prod
+
+./tool.sh drop --dev --yes
+./tool.sh drop --prod --skip-backup   # dangerous
+
+./tool.sh deps --check
+sudo ./tool.sh deps --install
+```
+
+Flags:
+
+- `--config <path>` to override env file (passthrough to scripts)
+- `--dev` / `--prod` are required for env selection
+
+# 4. Backup Script (`scripts/backup.sh`)
 
 ```
 ./backup.sh --dev
@@ -98,7 +127,7 @@ Creates:
 
 ---
 
-# 4. Restore Script (`restore_db.sh`)
+# 5. Restore Script (`scripts/restore_db.sh`)
 
 ```
 ./restore_db.sh --dev
@@ -110,13 +139,21 @@ Flow:
 1. Finds the latest backup  
 2. Shows metadata  
 3. If rejected → lists all backups  
-4. Requires typing DB name to confirm restore  
+     4. Requires typing DB name to confirm restore  
 
 Restores using `pg_restore --clean --verbose -F c`.
 
+List-only mode:
+
+```
+./tool.sh list --dev
+./tool.sh list --prod
+```
+Shows available backups and exits without restoring.
+
 ---
 
-# 5. Drop Tables Script (`drop_all_tables.sh`)
+# 6. Drop Tables Script (`scripts/drop_all_tables.sh`)
 
 ```
 ./drop_all_tables.sh --dev
@@ -139,7 +176,7 @@ Optional but dangerous flags:
 
 ---
 
-# 6. Backup Storage Layout
+# 7. Backup Storage Layout
 
 ```
 backups/<env>/<timestamp>/
@@ -149,7 +186,7 @@ backups/<env>/<timestamp>/
 
 ---
 
-# 7. CI/CD Usage
+# 8. CI/CD Usage
 
 Backup:
 
@@ -166,7 +203,7 @@ Drop + restore (rare):
 
 ---
 
-# 8. Security Notes
+# 9. Security Notes
 
 - Passwords never printed
 - Dangerous operations require DB name confirmation
@@ -174,7 +211,7 @@ Drop + restore (rare):
 
 ---
 
-# 9. Troubleshooting
+# 10. Troubleshooting
 
 Missing binaries:
 
@@ -191,32 +228,34 @@ chmod -R 755 backups/
 
 ---
 
-# 10. Commands Summary
+# 11. Commands Summary
 
 Backup:
 
 ```
-./backup.sh --dev
-./backup.sh --prod
+./tool.sh backup --dev
+./tool.sh backup --prod
 ```
 
 Restore:
 
 ```
-./restore_db.sh --dev
-./restore_db.sh --prod
+./tool.sh restore --dev
+./tool.sh restore --prod
+./tool.sh list --dev
+./tool.sh list --prod
 ```
 
 Drop:
 
 ```
-./drop_all_tables.sh --dev
-./drop_all_tables.sh --prod
+./tool.sh drop --dev
+./tool.sh drop --prod
 ```
 
 Dependencies:
 
 ```
-sudo ./backup_deps.sh --install
-./backup_deps.sh --check
+sudo ./tool.sh deps --install
+./tool.sh deps --check
 ```
