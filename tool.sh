@@ -20,6 +20,14 @@ BACKUP_ROOT="${BACKUP_ROOT:-}"           # optional override passthrough
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 error() { log "ERROR: $*"; exit 1; }
 
+# Runtime guard: Linux/WSL only
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  Linux) ;; # OK: native Linux or WSL
+  *)
+    error "Unsupported shell/OS. Use Bash on Linux or WSL. On Windows, run via WSL (Ubuntu)."
+    ;;
+esac
+
 usage() {
   cat <<EOF
 Usage: $SCRIPT_NAME <command> [--dev|--prod] [options]
