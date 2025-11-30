@@ -96,6 +96,8 @@ pass_config_env() {
   if [[ -n "$BACKUP_ROOT" ]]; then
     export BACKUP_ROOT
   fi
+  # Provide the project root for path normalization in scripts
+  export TOOL_ROOT="$SCRIPTPATH"
 }
 
 cmd_backup() {

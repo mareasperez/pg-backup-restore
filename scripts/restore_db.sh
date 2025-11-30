@@ -3,256 +3,256 @@ set -euo pipefail
 
 SCRIPT_NAME=$(basename "$0")
 SCRIPTPATH=$(cd "${0%/*}" && pwd -P)
+PROJECT_ROOT="${TOOL_ROOT:-$SCRIPTPATH/..}"
+
+# Global config (non-secret) file path (override with GLOBAL_CONFIG_FILE)
+GLOBAL_CONFIG_FILE="${GLOBAL_CONFIG_FILE:-$PROJECT_ROOT/config.ini}"
 
 TARGET_ENV=""
-SOURCE_ENV=""  # optional; defaults to TARGET_ENV if not set
+SOURCE_ENV=""
 CONFIG_FILE_PATH="${CONFIG_FILE_PATH:-}"
-BACKUP_ROOT="${BACKUP_ROOT:-$SCRIPTPATH/../backups}"
+BACKUP_ROOT="${BACKUP_ROOT:-}"
 
-backup_file=""; metadata_file=""; LIST_ONLY=0; FORCE_LATEST=0
+NO_PROGRESS=0
+SHOW_LINES=0
+LATEST=0
 
+log(){ printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
+error(){ log "ERROR: $*"; exit 1; }
 
-log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
-error() { log "ERROR: $*"; exit 1; }
+require_cmd(){ command -v "$1" >/dev/null 2>&1 || error "Missing required command: $1"; }
 
-usage() {
-  cat <<EOF
-Usage: $SCRIPT_NAME --target <dev|prod> [--source <dev|prod>] [--list] [--latest] [--no-progress] [--show-lines]
-
-WARNING:
-  Wrapper (tool.sh) restricts destructive operations to DEV (target=dev).
-  Direct PROD restore allowed only by running this script manually.
-
-Flags:
-  --target <dev|prod>   Destination database environment (required)
-  --source <dev|prod>   Backup source environment (optional; defaults to target)
-  --list                List backups for source and exit (no restore)
-  --latest              Use latest backup without the (y/n) prompt
-  --no-progress         Disable progress/ETA display during restore
-  --show-lines          Show verbose pg_restore output lines (normally suppressed when progress active)
-  -h|--help  Show help
-
-Env vars:
-  CONFIG_FILE_PATH  Optional path to target env file
-  BACKUP_ROOT       Base backups dir (default: $BACKUP_ROOT)
-EOF
+load_settings(){
+  local file="$GLOBAL_CONFIG_FILE"
+  [[ -r "$file" ]] || return 0
+  while IFS='=' read -r k v; do
+    local key="$(echo "$k" | sed 's/[[:space:]]//g')"
+    [[ -z "$key" ]] && continue
+    # Skip comments starting with # or ;
+    case "$key" in
+      \#*|\;*) continue ;;
+    esac
+    # Skip section headers like [paths]
+    case "$key" in
+      \[*\]) continue ;;
+    esac
+    local val="$(echo "$v" | sed 's/^ *//;s/ *$//')"
+    case "$key" in
+      BACKUP_ROOT) [[ -z "$BACKUP_ROOT" ]] && BACKUP_ROOT="$val" ;;
+    esac
+  done < "$file"
 }
 
-parse_args() {
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --target) shift; TARGET_ENV="${1:-}" ;;
-      --source) shift; SOURCE_ENV="${1:-}" ;;
-      --list) LIST_ONLY=1 ;;
-      --latest) FORCE_LATEST=1 ;;
-      --no-progress) NO_PROGRESS=1 ;;
-      --show-lines) SHOW_LINES=1 ;;
-      -h|--help) usage; exit 0 ;;
-      --dev|-d|--prod|-p|--from-prod) error "Deprecated flag: use --target and optional --source instead" ;;
-      *) error "Unknown argument: $1" ;;
-    esac; shift
-  done
-  [[ -n "$TARGET_ENV" ]] || error "--target <dev|prod> is required"
-  if [[ -z "$SOURCE_ENV" ]]; then SOURCE_ENV="$TARGET_ENV"; fi
-  [[ "$TARGET_ENV" =~ ^(dev|prod)$ ]] || error "Invalid --target value: $TARGET_ENV"
-  [[ "$SOURCE_ENV" =~ ^(dev|prod)$ ]] || error "Invalid --source value: $SOURCE_ENV"
+set_env(){
+  local env="$1"
+  case "$env" in
+    dev) CONFIG_BASENAME="dev.env" ;;
+    prod) CONFIG_BASENAME="prod.env" ;;
+    *) error "Unknown environment: $env" ;;
+  esac
 }
 
-load_config() {
-  local cfg_basename="${TARGET_ENV}.env"
-  [[ -z "$CONFIG_FILE_PATH" ]] && CONFIG_FILE_PATH="${SCRIPTPATH}/../${cfg_basename}"
-  [[ -r "$CONFIG_FILE_PATH" ]] || error "Could not load target config: $CONFIG_FILE_PATH"
-  log "Loading target config from: $CONFIG_FILE_PATH"
-  set -a; source "$CONFIG_FILE_PATH"; set +a
-  log "Target environment: $TARGET_ENV | Source backups: $SOURCE_ENV"
-  echo "========================================"
-  echo "DB_DATABASE: ${DB_DATABASE:-<not set>}"
-  echo "DB_HOST:     ${DB_HOST:-<not set>}"
-  echo "DB_USERNAME: ${DB_USERNAME:-<not set>}"
-  echo "DB_PASSWORD: ${DB_PASSWORD:+********}"
-  echo "DB_PORT:     ${DB_PORT:-<default>}"
-  echo "========================================"
-}
-
-test_connection() {
-  require_cmd "psql"
-  local port="${DB_PORT:-5432}"
-  log "Testing connectivity to $DB_HOST:$port ($DB_DATABASE)"
-  PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" -p "$port" -t -A -c 'SELECT 1;' >/dev/null 2>&1 || error "Connectivity test failed (SELECT 1). Verify host/port/network or credentials."
-  log "Connectivity OK."
-}
-
-validate_required_env() {
-  local missing=()
+load_target_config(){
+  [[ -n "$TARGET_ENV" ]] || error "Target env not set"
+  set_env "$TARGET_ENV"
+  local cfg="${CONFIG_FILE_PATH:-$SCRIPTPATH/../$CONFIG_BASENAME}"
+  [[ -r "$cfg" ]] || error "Cannot read env file: $cfg"
+  log "Loading target env from: $cfg"
+  set -a; # shellcheck disable=SC1090
+  source "$cfg"; set +a
   for var in DB_DATABASE DB_HOST DB_USERNAME DB_PASSWORD; do
-    if [[ -z "${!var:-}" ]]; then
-      missing+=("$var")
-    fi
+    [[ -n "${!var:-}" ]] || error "Missing required env var: $var"
   done
-  if (( ${#missing[@]} > 0 )); then
-    error "Missing env vars: ${missing[*]}"
+}
+
+latest_or_select_backup(){
+  [[ -n "$SOURCE_ENV" ]] || error "Source env not set"
+  : "${BACKUP_ROOT:=$PROJECT_ROOT/backups}"
+  local base="$BACKUP_ROOT/$SOURCE_ENV"
+  if [[ ! -d "$base" ]]; then
+    log "DEBUG: PROJECT_ROOT=$PROJECT_ROOT"
+    log "DEBUG: BACKUP_ROOT=$BACKUP_ROOT"
+    log "DEBUG: base=$base"
+    error "Backup directory not found: $base"
   fi
-}
-require_cmd() { command -v "$1" >/dev/null 2>&1 || error "Required command '$1' not found"; }
 
-estimate_total_items() {
-  # Count TOC entries (exclude comments/blank lines). Fallback to 0 on error.
-  local count
-  count=$(pg_restore -l "$backup_file" 2>/dev/null | grep -vE '^(;|$)' | wc -l | tr -d ' ' || echo 0)
-  echo "$count"
-}
+  local latest
+  latest=$(ls -td "$base"/* 2>/dev/null | head -n 1 || true)
 
-list_backups() {
-  local base_dir="${BACKUP_ROOT}/${SOURCE_ENV}"
-  [[ -d "$base_dir" ]] || error "Backup directory does not exist: $base_dir"
-  log "Listing backups under: $base_dir"
-  local -a backup_dirs=(); while IFS= read -r -d '' dir; do backup_dirs+=("$dir"); done < <(find "$base_dir" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
-  (( ${#backup_dirs[@]} > 0 )) || error "No backup directories found in $base_dir"
-  echo "Available backups:"; local i=1
-  for d in "${backup_dirs[@]}"; do
-    local dump_file="${d}/${FOLDER_NAME}.dump"; local meta_file="${d}/${FOLDER_NAME}.meta"; local name; name=$(basename "$d")
-    if [[ -f "$dump_file" ]]; then
-      if [[ -f "$meta_file" ]]; then printf "  %2d) %s\n" "$i" "$name"; else printf "  %2d) %s * (missing .meta)\n" "$i" "$name"; fi; ((i++))
+  if (( LATEST == 1 )) && [[ -n "$latest" && -f "$latest/$SOURCE_ENV.dump" ]]; then
+    backup_file="$latest/$SOURCE_ENV.dump"
+    metadata_file="$latest/$SOURCE_ENV.meta"
+    echo "Latest backup: $(basename "$latest")"
+    [[ -f "$metadata_file" ]] && cat "$metadata_file"
+    return
+  fi
+
+  if [[ -z "$latest" || ! -f "$latest/$SOURCE_ENV.dump" ]]; then
+    echo "No valid latest backup found. Listing all available:";
+  else
+    echo "Latest backup: $(basename "$latest")"
+    [[ -f "$latest/$SOURCE_ENV.meta" ]] && cat "$latest/$SOURCE_ENV.meta"
+    read -r -p "Use latest? (y/n) " ans
+    if [[ "$ans" == "y" ]]; then
+      backup_file="$latest/$SOURCE_ENV.dump"
+      metadata_file="$latest/$SOURCE_ENV.meta"
+      return
     fi
-  done
-  (( i > 1 )) || error "No valid backups (with .dump) found in $base_dir"
-}
+  fi
 
-list_backups_and_select() {
-  list_backups
-  local base_dir="${BACKUP_ROOT}/${SOURCE_ENV}"; local selection=""; local i=1; local -a valid_dirs=()
-  while IFS= read -r -d '' dir; do [[ -f "${dir}/${SOURCE_ENV}.dump" ]] && valid_dirs+=("$dir"); done < <(find "$base_dir" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+  local -a dirs=()
+  while IFS= read -r -d '' d; do dirs+=("$d"); done < <(find "$base" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+  (( ${#dirs[@]} > 0 )) || error "No backups found in: $base"
+  echo "Available backups:"; local i=1
+  for d in "${dirs[@]}"; do
+    [[ -f "$d/$SOURCE_ENV.dump" ]] && echo "  $i) $(basename "$d")" && ((i++))
+  done
+  (( i > 1 )) || error "No valid backups with dump file."
   while true; do
-    read -r -p "Enter the number of the backup you want to restore: " selection
-    if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#valid_dirs[@]} )); then
-      local chosen_dir="${valid_dirs[$((selection-1))]}"
-      backup_file="${chosen_dir}/${SOURCE_ENV}.dump"; metadata_file="${chosen_dir}/${SOURCE_ENV}.meta"
-      log "Selected backup: $(basename "$chosen_dir")"
-      if [[ -f "$metadata_file" ]]; then echo "Backup metadata:"; cat "$metadata_file"; else echo "Backup metadata: <missing>"; fi
+    read -r -p "Select backup number: " n
+    if [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n < i )); then
+      local chosen="${dirs[n-1]}"
+      backup_file="$chosen/$SOURCE_ENV.dump"
+      metadata_file="$chosen/$SOURCE_ENV.meta"
       break
     fi
-    echo "Invalid selection. Please enter a valid number."
+    echo "Invalid selection."
   done
 }
 
-load_latest_backup_or_select() {
-  local base_dir="${BACKUP_ROOT}/${SOURCE_ENV}"; [[ -d "$base_dir" ]] || error "Backup directory does not exist: $base_dir"
-  log "Looking for the latest backup in: $base_dir"
-  local latest_backup_dir; latest_backup_dir=$(ls -td "${base_dir}"/* 2>/dev/null | head -n 1 || true)
-  if [[ -z "$latest_backup_dir" ]]; then echo "No backups found in $base_dir"; list_backups_and_select; return; fi
-  backup_file="${latest_backup_dir}/${SOURCE_ENV}.dump"; metadata_file="${latest_backup_dir}/${SOURCE_ENV}.meta"
-  if [[ ! -f "$backup_file" ]]; then echo "Latest backup folder does not contain a .dump file: $latest_backup_dir"; list_backups_and_select; return; fi
-  echo "Latest backup found: $(basename "$latest_backup_dir")"; [[ -f "$metadata_file" ]] && { echo "Backup metadata:"; cat "$metadata_file"; } || echo "Backup metadata: <missing>"
-  if (( FORCE_LATEST == 0 )); then
-    read -r -p "Do you want to restore this latest backup? (y/n) " confirm_restore
-    if [[ "$confirm_restore" != "y" ]]; then echo "You chose not to restore the latest backup."; list_backups_and_select; fi
-  fi
+confirm_restore(){
+  echo
+  echo "About to restore into target DB: $DB_DATABASE on $DB_HOST"
+  [[ -f "$metadata_file" ]] && { echo "Source backup metadata:"; cat "$metadata_file"; }
+  read -r -p "Type the database name ('$DB_DATABASE') to confirm: " ans
+  [[ "$ans" == "$DB_DATABASE" ]] || error "Confirmation failed."
 }
 
-confirm_restore() {
-  echo; echo "You are about to RESTORE database:"; echo "  Target environment = $TARGET_ENV"; echo "  Source backup env  = $SOURCE_ENV"; echo "  DB_DATABASE        = $DB_DATABASE"; echo "  DB_HOST            = $DB_HOST"; echo "  DB_USERNAME        = $DB_USERNAME"; echo "  Backup file        = $backup_file"; echo
-  read -r -p "Type the database name ('$DB_DATABASE') to confirm restore, or anything else to abort: " answer
-  [[ "$answer" == "$DB_DATABASE" ]] || { log "Confirmation failed. Aborting."; exit 1; }
-  log "Confirmation accepted. Proceeding with restore."
+estimate_total_items(){
+  [[ -n "$backup_file" ]] || { echo 0; return; }
+  PGPASSWORD="$DB_PASSWORD" pg_restore -l "$backup_file" 2>/dev/null | grep -c . || echo 0
 }
 
-restore_db() {
-  validate_required_env; require_cmd "pg_restore"; [[ -n "$backup_file" && -f "$backup_file" ]] || error "Backup file not set or missing: $backup_file"
-  confirm_restore
+restore_with_progress(){
   local port_arg=(); [[ -n "${DB_PORT:-}" ]] && port_arg=(-p "$DB_PORT")
-  log "Starting restore at: $(date)"; log "Connecting to target database: $DB_DATABASE on $DB_HOST (source backups: $SOURCE_ENV)"
+  log "Starting restore at: $(date)"
+  log "Target: $DB_DATABASE@$DB_HOST | Source env: $SOURCE_ENV"
 
   if (( NO_PROGRESS == 1 )); then
-    PGPASSWORD="$DB_PASSWORD" pg_restore -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" "${port_arg[@]}" --clean --verbose -F c "$backup_file"
+    PGPASSWORD="$DB_PASSWORD" pg_restore -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" \
+      "${port_arg[@]}" --clean --verbose -F c "$backup_file"
     log "Restore completed successfully at: $(date)"; return
   fi
 
-  local total_items processed_items eta_display last_line
-  total_items=$(estimate_total_items)
-  if (( total_items > 0 )); then
-    log "Total TOC items: $total_items"
-  else
-    log "Total TOC items unknown (ETA may be unavailable)."
-  fi
-
-  local tmp_log
-  tmp_log=$(mktemp)
-  SECONDS=0
-  # Run pg_restore in background, capturing stderr to tmp_log
+  local total_items processed_items eta_display last_line tmp_log
+  total_items=$(estimate_total_items); tmp_log=$(mktemp); SECONDS=0
   (
-    PGPASSWORD="$DB_PASSWORD" pg_restore -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" "${port_arg[@]}" --clean --verbose -F c "$backup_file" 2>"$tmp_log" 1>&2
-  ) &
-  local pid=$!
-  processed_items=0
-  local prev_processed=0
+    PGPASSWORD="$DB_PASSWORD" pg_restore -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" \
+      "${port_arg[@]}" --clean --verbose -F c "$backup_file" 2>"$tmp_log" 1>&2
+  ) & local pid=$!; processed_items=0; echo ""
+
+  local use_tput=0; if [ -t 1 ] && command -v tput >/dev/null 2>&1; then use_tput=1; tput civis; trap 'tput cnorm' EXIT; fi
   while kill -0 "$pid" 2>/dev/null; do
-    local elapsed=$SECONDS
-    local m=$(( elapsed / 60 ))
-    local s=$(( elapsed % 60 ))
-    # Count lines indicating creation/processing
+    local elapsed=$SECONDS m=$((elapsed/60)) s=$((elapsed%60))
     if (( total_items > 0 )); then
-      # Use grep -c for a stable integer count; fallback to 0
       processed_items=$(grep -cE '^pg_restore: (creating|processing|restoring|setting)' "$tmp_log" 2>/dev/null || echo 0)
     else
       processed_items=$(grep -cE '^pg_restore:' "$tmp_log" 2>/dev/null || echo 0)
     fi
-    # Sanitize to integer (handle rare formatting anomalies)
-    [[ "$processed_items" =~ ^[0-9]+$ ]] || processed_items=0
-    [[ "$m" =~ ^[0-9]+$ ]] || m=0
-    [[ "$s" =~ ^[0-9]+$ ]] || s=0
-    local speed=0
-    if (( elapsed > 5 && processed_items > 0 )); then
-      speed=$(( processed_items / elapsed ))
-    fi
-    eta_display="-"
-    if (( total_items > 0 && speed > 0 && processed_items < total_items )); then
-      local remaining=$(( total_items - processed_items ))
-      local eta_sec=$(( remaining / speed ))
+    [[ "$processed_items" =~ ^[0-9]+$ ]] || processed_items=0; [[ "$m" =~ ^[0-9]+$ ]] || m=0; [[ "$s" =~ ^[0-9]+$ ]] || s=0
+    local speed=0; if (( elapsed > 5 && processed_items > 0 )); then speed=$(( processed_items / elapsed )); fi
+    eta_display="-"; if (( total_items > 0 && speed > 0 && processed_items < total_items )); then
+      local remaining=$(( total_items - processed_items )) eta_sec=$(( remaining / speed ))
       if (( eta_sec >= 0 && eta_sec < 43200 )); then
-        local eh=$(( eta_sec / 3600 ))
-        local em=$(( (eta_sec % 3600) / 60 ))
-        local es=$(( eta_sec % 60 ))
+        local eh=$(( eta_sec / 3600 )) em=$(( (eta_sec % 3600) / 60 )) es=$(( eta_sec % 60 ))
         [[ "$eh" =~ ^[0-9]+$ ]] || eh=0; [[ "$em" =~ ^[0-9]+$ ]] || em=0; [[ "$es" =~ ^[0-9]+$ ]] || es=0
-        if (( eh > 0 )); then
-          eta_display=$(printf "%02d:%02d:%02d" "$eh" "$em" "$es")
-        else
-          eta_display=$(printf "%02d:%02d" "$em" "$es")
-        fi
+        if (( eh > 0 )); then eta_display=$(printf "%02d:%02d:%02d" "$eh" "$em" "$es"); else eta_display=$(printf "%02d:%02d" "$em" "$es"); fi
       fi
     fi
-    if (( SHOW_LINES == 1 )); then
-      last_line=$(tail -n 1 "$tmp_log" 2>/dev/null || echo "")
-    else
-      last_line=""
-    fi
-    if [[ -n "$last_line" ]]; then
-      printf "Elapsed %02d:%02d | Items %d/%d | ETA %s | %s\r" "$m" "$s" "$processed_items" "$total_items" "$eta_display" "$last_line"
-    else
-      printf "Elapsed %02d:%02d | Items %d/%d | ETA %s\r" "$m" "$s" "$processed_items" "$total_items" "$eta_display"
-    fi
+    if (( SHOW_LINES == 1 )); then last_line=$(tail -n 1 "$tmp_log" 2>/dev/null || echo ""); else last_line=""; fi
+    if (( use_tput == 1 )); then tput sc; tput cup 0 0; printf "Elapsed %02d:%02d | Items %d/%d | ETA %s" "$m" "$s" "$processed_items" "$total_items" "$eta_display"
+      [[ -n "$last_line" ]] && printf " | %s" "$last_line"; printf '\033[K'; tput rc; else
+      if [[ -n "$last_line" ]]; then printf "Elapsed %02d:%02d | Items %d/%d | ETA %s | %s\r" "$m" "$s" "$processed_items" "$total_items" "$eta_display" "$last_line"; else
+        printf "Elapsed %02d:%02d | Items %d/%d | ETA %s\r" "$m" "$s" "$processed_items" "$total_items" "$eta_display"; fi; fi
     sleep 1
   done
-  wait "$pid"
-  local rc=$?
-  printf "\n"
-  if (( rc != 0 )); then
-    log "Restore failed with exit code $rc. Last lines:"; tail -n 10 "$tmp_log" >&2; rm -f "$tmp_log"; error "pg_restore finished with errors"
-  fi
-  rm -f "$tmp_log"
-  log "Restore completed successfully at: $(date)"
+  wait "$pid"; local rc=$?; if (( use_tput == 1 )); then tput cnorm; trap - EXIT; fi; printf "\n"
+  if (( rc != 0 )); then log "Restore failed with exit code $rc. Last lines:"; tail -n 10 "$tmp_log" >&2; rm -f "$tmp_log"; error "pg_restore finished with errors"; fi
+  rm -f "$tmp_log"; log "Restore completed successfully at: $(date)"
 }
 
-main() {
-  SECONDS=0
-  NO_PROGRESS=0
-  SHOW_LINES=0
-  parse_args "$@"
-  load_config
-  test_connection
-  if (( LIST_ONLY == 1 )); then list_backups; exit 0; fi
-  load_latest_backup_or_select
-  restore_db
-  printf "Total time: %d minutes and %d seconds elapsed.\n" "$((SECONDS/60))" "$((SECONDS%60))"
+usage(){ cat <<EOF
+Usage: $SCRIPT_NAME --target <env> [--source <env>] [--latest] [--no-progress] [--show-lines] [--list]
+Examples:
+  $SCRIPT_NAME --target dev --source prod --latest    # Refresh dev from latest prod
+  $SCRIPT_NAME --target dev --source prod             # Choose a prod backup
+  $SCRIPT_NAME --target dev                           # Choose a dev backup
+  $SCRIPT_NAME --target dev --latest                  # Latest dev backup
+EOF
+}
+
+main(){
+  load_settings
+  : "${BACKUP_ROOT:=$PROJECT_ROOT/backups}"
+  # If BACKUP_ROOT from config.ini is relative, normalize it to project root
+  case "$BACKUP_ROOT" in
+    /*|[A-Za-z]:*) ;; # absolute (Linux or Windows path)
+    *) BACKUP_ROOT="$PROJECT_ROOT/$BACKUP_ROOT" ;;
+  esac
+
+  local LIST_ONLY=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --target) shift; TARGET_ENV="${1:-}" ;;
+      --source) shift; SOURCE_ENV="${1:-}" ;;
+      --latest) LATEST=1 ;;
+      --no-progress) NO_PROGRESS=1 ;;
+      --show-lines) SHOW_LINES=1 ;;
+      --list) LIST_ONLY=1 ;;
+      -h|--help) usage; exit 0 ;;
+      --dev|-d) SOURCE_ENV="dev" ;; # compatibility for list
+      --prod|-p) SOURCE_ENV="prod" ;; # compatibility for list
+      *) error "Unknown arg: $1" ;;
+    esac; shift || true
+  done
+
+  if (( LIST_ONLY == 1 )); then
+    # Default to PROD if not specified for convenience in wrapper list
+    [[ -n "$SOURCE_ENV" ]] || SOURCE_ENV="prod"
+    : "${BACKUP_ROOT:=$PROJECT_ROOT/backups}"
+    # Ensure BACKUP_ROOT normalization (absolute or relative to project root)
+    case "$BACKUP_ROOT" in
+      /*|[A-Za-z]:*) ;; 
+      *) BACKUP_ROOT="$PROJECT_ROOT/${BACKUP_ROOT#./}" ;;
+    esac
+    # Debug current SOURCE_ENV and fallback
+    log "DEBUG: SOURCE_ENV=${SOURCE_ENV:-<empty>}"
+    # Normalize SOURCE_ENV to avoid hidden whitespace/newlines
+    local env_dir
+    env_dir="$(echo "${SOURCE_ENV:-prod}" | tr -d '[:space:]')"
+    [[ -z "$env_dir" ]] && env_dir="prod"
+    # Build base path safely
+    local base
+    base="$(printf '%s/%s' "$BACKUP_ROOT" "$env_dir")"
+    if [[ ! -d "$base" ]]; then
+      log "No backups directory found at: $base"
+      log "DEBUG: PROJECT_ROOT=$PROJECT_ROOT"
+      log "DEBUG: BACKUP_ROOT=$BACKUP_ROOT"
+      log "DEBUG: SOURCE_ENV=$SOURCE_ENV"
+      log "DEBUG: base=$base"
+      log "Hint: ensure '$SOURCE_ENV' subfolder exists under '$BACKUP_ROOT'"
+      exit 0
+    fi
+    ls -1 "$base" | sed 's/^/ - /'
+    exit 0
+  fi
+
+  [[ -n "$TARGET_ENV" ]] || error "--target <env> required"
+  [[ -n "$SOURCE_ENV" ]] || SOURCE_ENV="$TARGET_ENV"
+
+  load_target_config
+  latest_or_select_backup
+  restore_with_progress
 }
 
 main "$@"
