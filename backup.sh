@@ -106,7 +106,7 @@ load_settings() {
         [[ -z "$key" ]] && continue
         [[ "$key" =~ ^[#;] ]] && continue
         [[ "$key" =~ ^\[.*\]$ ]] && continue
-        val="$(echo "${raw_val}" | sed 's/^ *//;s/ *$//')"
+        val="$(echo "${raw_val}" | sed 's/^ *//;s/ *$//;s/\r$//')"
         case "$key" in
             BACKUP_ROOT)       [[ -z "$BACKUP_ROOT" ]] && BACKUP_ROOT="$val" ;;
             LOG_FILE)          [[ -z "$LOG_FILE" ]] && LOG_FILE="$val" ;;

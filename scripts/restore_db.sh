@@ -36,7 +36,7 @@ load_settings(){
     case "$key" in
       \[*\]) continue ;;
     esac
-    local val="$(echo "$v" | sed 's/^ *//;s/ *$//')"
+    local val="$(echo "$v" | sed 's/^ *//;s/ *$//;s/\r$//')"
     case "$key" in
       BACKUP_ROOT) [[ -z "$BACKUP_ROOT" ]] && BACKUP_ROOT="$val" ;;
     esac
