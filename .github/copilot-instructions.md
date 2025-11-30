@@ -4,11 +4,13 @@ These instructions capture project-specific patterns so an AI agent can work saf
 
 ## Core Purpose & Flow
 - Toolkit of Bash scripts to safely backup, restore, and reset PostgreSQL databases across `dev` and `prod` environments.
+- Runtime support: Linux or Windows Subsystem for Linux (WSL) only. Do not attempt to run in Windows PowerShell or non-WSL terminals.
 - Primary scripts: `backup.sh`, `restore_db.sh`, `drop_all_tables.sh`, `backup_deps.sh`. Older/legacy helpers (`pg_dump.sh`, `pg_restore.sh`, `restore_on_dev.sh`) exist but new work should extend the primary scripts.
 - Backup artifacts live under `backups/<env>/<timestamp>/` with `<env>.dump` and `<env>.meta` plus a top-level `transfer.dump` copy for convenience.
 
 ## Script Conventions
 - Always start new scripts with: `#!/usr/bin/env bash` and `set -euo pipefail`.
+- All commands and examples assume a POSIX Bash shell. On Windows, use WSL.
 - Provide a `usage()` function and validate args early; exit with helpful error messages via a centralized `error()` or `log()` pattern.
 - Use environment selection flags: `--dev` / `--prod` (short forms `-d` / `-p`); do NOT invent new environment flag names.
 - Load env files using `set -a; source file; set +a` and validate required vars `DB_HOST DB_USERNAME DB_PASSWORD DB_DATABASE` before destructive or external operations.
@@ -52,7 +54,7 @@ These instructions capture project-specific patterns so an AI agent can work saf
 - `pg_dump.sh`, `pg_restore.sh`, `restore_on_dev.sh` are simpler and partially duplicate functionality. Prefer enhancing `backup.sh` / `restore_db.sh` instead of touching legacy files; if deprecating, add a top comment: `# DEPRECATED: use backup.sh / restore_db.sh`.
 
 ## Testing & Verification
-- Quick manual test (dev): `CONFIG_FILE_PATH=dev.env ./backup.sh --dev` then `./restore_db.sh --dev` and confirm DB name. Check new timestamp directory and metadata integrity.
+- Quick manual test (dev) from Linux/WSL: `CONFIG_FILE_PATH=dev.env ./backup.sh --dev` then `./restore_db.sh --dev` and confirm DB name. Check new timestamp directory and metadata integrity.
 - To validate dependency changes: `./backup_deps.sh --check` before and after modification.
 
 ## Do Not
@@ -60,6 +62,7 @@ These instructions capture project-specific patterns so an AI agent can work saf
 - Do not output passwords or secrets in logs/metadata.
 - Do not change existing file naming (`dev.dump`, `prod.dump`, `transfer.dump`).
 - Do not introduce interactive UI requiring tools beyond POSIX/Bash.
+- Do not run or validate commands in Windows PowerShell; use WSL or native Linux.
 
 ---
 If any area seems ambiguous (e.g., adding encryption, retention policies, or container usage), ask for clarification before implementing. Please review and indicate sections needing adjustment or expansion.

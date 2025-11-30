@@ -8,7 +8,12 @@ This repository contains a safe and consistent set of scripts for:
 - **Dropping all tables** (with automatic pre-drop backup) (`scripts/drop_all_tables.sh`)
 - **Installing/checking dependencies** (`scripts/backup_deps.sh`)
 
-The scripts are designed for Linux/WSL environments and use **dev/prod** flags for environment isolation.
+Important runtime support note:
+
+- Supported: Linux (e.g., Ubuntu) and Windows Subsystem for Linux (WSL) using Bash.
+- Not supported: Windows PowerShell or any non-WSL Windows terminal. Use WSL on Windows.
+
+The scripts use **dev/prod** flags for environment isolation.
 
 ---
 
@@ -65,19 +70,19 @@ DB_PORT=5432
 
 # 2. Installing Dependencies
 
-Install:
+Install (Linux/WSL only):
 
 ```
 sudo ./backup_deps.sh --install
 ```
 
-Check only:
+Check only (Linux/WSL only):
 
 ```
 ./backup_deps.sh --check
 ```
 
-Dependencies:
+Dependencies (Linux/WSL only):
 
 - postgresql-client  
 - coreutils  
@@ -87,7 +92,7 @@ Dependencies:
 
 # 3. Central Entry (`tool.sh`)
 
-Run everything via the central entry point (each operation performs a pre-connection test `SELECT 1`). Commands are grouped by workflow for clarity:
+Run everything via the central entry point from Linux/WSL (each operation performs a pre-connection test `SELECT 1`). Commands are grouped by workflow for clarity:
 
 ```
 Prod -> Dev:
@@ -106,7 +111,7 @@ Backups:
      ./tool.sh list --prod           # List PROD backups
      ./tool.sh list --dev            # List DEV backups
 
-Utilities:
+Utilities (Linux/WSL environment expected):
      ./tool.sh deps --check
      sudo ./tool.sh deps --install
      ./tool.sh                        # Interactive menu
