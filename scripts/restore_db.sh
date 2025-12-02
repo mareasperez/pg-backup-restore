@@ -5,6 +5,9 @@ SCRIPT_NAME=$(basename "$0")
 SCRIPTPATH=$(cd "${0%/*}" && pwd -P)
 PROJECT_ROOT="${TOOL_ROOT:-$SCRIPTPATH/..}"
 
+# Source environment utilities
+source "$SCRIPTPATH/env_utils.sh"
+
 # Global config (non-secret) file path (override with GLOBAL_CONFIG_FILE)
 GLOBAL_CONFIG_FILE="${GLOBAL_CONFIG_FILE:-$PROJECT_ROOT/config.ini}"
 
@@ -12,6 +15,7 @@ TARGET_ENV=""
 SOURCE_ENV=""
 CONFIG_FILE_PATH="${CONFIG_FILE_PATH:-}"
 BACKUP_ROOT="${BACKUP_ROOT:-}"
+ENV_DIR="${ENV_DIR:-}"
 
 NO_PROGRESS=0
 SHOW_LINES=0
@@ -39,27 +43,22 @@ load_settings(){
     local val="$(echo "$v" | sed 's/^ *//;s/ *$//;s/\r$//')"
     case "$key" in
       BACKUP_ROOT) [[ -z "$BACKUP_ROOT" ]] && BACKUP_ROOT="$val" ;;
+      ENV_DIR) [[ -z "$ENV_DIR" ]] && ENV_DIR="$val" ;;
     esac
   done < "$file"
 }
 
-set_env(){
-  local env="$1"
-  case "$env" in
-    dev) CONFIG_BASENAME="dev.env" ;;
-    prod) CONFIG_BASENAME="prod.env" ;;
-    *) error "Unknown environment: $env" ;;
-  esac
-}
+
 
 load_target_config(){
   [[ -n "$TARGET_ENV" ]] || error "Target env not set"
-  set_env "$TARGET_ENV"
-  local cfg="${CONFIG_FILE_PATH:-$SCRIPTPATH/../$CONFIG_BASENAME}"
+  validate_environment "$TARGET_ENV"
+  local cfg=$(get_env_file_path "$TARGET_ENV")
   [[ -r "$cfg" ]] || error "Cannot read env file: $cfg"
   log "Loading target env from: $cfg"
-  set -a; # shellcheck disable=SC1090
-  source "$cfg"; set +a
+  set -a
+  source "$cfg"
+  set +a
   for var in DB_DATABASE DB_HOST DB_USERNAME DB_PASSWORD; do
     [[ -n "${!var:-}" ]] || error "Missing required env var: $var"
   done
@@ -183,6 +182,10 @@ restore_with_progress(){
 
 usage(){ cat <<EOF
 Usage: $SCRIPT_NAME --target <env> [--source <env>] [--latest] [--no-progress] [--show-lines] [--list]
+
+Available environments:
+$(list_environments | sed 's/^/  - /')
+
 Examples:
   $SCRIPT_NAME --target dev --source prod --latest    # Refresh dev from latest prod
   $SCRIPT_NAME --target dev --source prod             # Choose a prod backup
@@ -210,40 +213,26 @@ main(){
       --show-lines) SHOW_LINES=1 ;;
       --list) LIST_ONLY=1 ;;
       -h|--help) usage; exit 0 ;;
-      --dev|-d) SOURCE_ENV="dev" ;; # compatibility for list
-      --prod|-p) SOURCE_ENV="prod" ;; # compatibility for list
       *) error "Unknown arg: $1" ;;
     esac; shift || true
   done
 
   if (( LIST_ONLY == 1 )); then
-    # Default to PROD if not specified for convenience in wrapper list
-    [[ -n "$SOURCE_ENV" ]] || SOURCE_ENV="prod"
+    [[ -n "$SOURCE_ENV" ]] || error "--source <env> required for list mode"
+    validate_environment "$SOURCE_ENV"
     : "${BACKUP_ROOT:=$PROJECT_ROOT/backups}"
     # Ensure BACKUP_ROOT normalization (absolute or relative to project root)
     case "$BACKUP_ROOT" in
       /*|[A-Za-z]:*) ;; 
       *) BACKUP_ROOT="$PROJECT_ROOT/${BACKUP_ROOT#./}" ;;
     esac
-    # Debug current SOURCE_ENV and fallback
-    log "DEBUG: SOURCE_ENV=${SOURCE_ENV:-<empty>}"
-    # Normalize SOURCE_ENV to avoid hidden whitespace/newlines
-    local env_dir
-    env_dir="$(echo "${SOURCE_ENV:-prod}" | tr -d '[:space:]')"
-    [[ -z "$env_dir" ]] && env_dir="prod"
-    # Build base path safely
-    local base
-    base="$(printf '%s/%s' "$BACKUP_ROOT" "$env_dir")"
+    local base="$BACKUP_ROOT/$SOURCE_ENV"
     if [[ ! -d "$base" ]]; then
       log "No backups directory found at: $base"
-      log "DEBUG: PROJECT_ROOT=$PROJECT_ROOT"
-      log "DEBUG: BACKUP_ROOT=$BACKUP_ROOT"
-      log "DEBUG: SOURCE_ENV=$SOURCE_ENV"
-      log "DEBUG: base=$base"
       log "Hint: ensure '$SOURCE_ENV' subfolder exists under '$BACKUP_ROOT'"
       exit 0
     fi
-    ls -1 "$base" | sed 's/^/ - /'
+    ls -1 "$base" | sed 's/^/  - /'
     exit 0
   fi
 

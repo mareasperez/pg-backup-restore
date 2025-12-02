@@ -8,13 +8,16 @@ trap 'rc=$?; log "ERROR trap: rc=$rc line=$LINENO cmd=$BASH_COMMAND"' ERR
 
 SCRIPT_NAME=$(basename "$0")
 SCRIPTPATH=$(cd "${0%/*}" && pwd -P)
+PROJECT_ROOT="${TOOL_ROOT:-$SCRIPTPATH/..}"
+
+# Source environment utilities
+source "$SCRIPTPATH/env_utils.sh"
 
 ENVIRONMENT=""
-FOLDER_NAME=""
-CONFIG_BASENAME=""
 CONFIG_FILE_PATH="${CONFIG_FILE_PATH:-}"
-BACKUP_ROOT="${BACKUP_ROOT:-$SCRIPTPATH/../backups}"
-LOG_FILE="${LOG_FILE:-$SCRIPTPATH/../backup.log}"
+BACKUP_ROOT="${BACKUP_ROOT:-$PROJECT_ROOT/backups}"
+LOG_FILE="${LOG_FILE:-$PROJECT_ROOT/backup.log}"
+ENV_DIR="${ENV_DIR:-$PROJECT_ROOT/environments}"
 
 _log_to_file() { local msg="$1"; { printf '%s\n' "$msg" >> "$LOG_FILE"; } 2>/dev/null || true; }
 log() { local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $*"; printf '%s\n' "$msg" >&2; _log_to_file "$msg"; }
@@ -22,22 +25,27 @@ error() { log "ERROR: $*"; exit 1; }
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME --dev | --prod [--debug]
+Usage: $SCRIPT_NAME --env <environment> [--debug]
 Flags:
-  --dev|-d         Backup dev
-  --prod|-p        Backup prod
+  --env|-e <name>  Environment to backup (required)
   --debug          Verbose trace (or BACKUP_DEBUG=1)
+  -h|--help        Show this help
+
+Available environments:
+$(list_environments | sed 's/^/  - /')
+
 Env overrides:
   CONFIG_FILE_PATH  custom env file path
   BACKUP_ROOT       custom backups directory
   LOG_FILE          custom log file path
+  ENV_DIR           custom environments directory
+
 Dependencies:
   pg_dump, stat, md5sum (optional: crc32)
 
-Safety:
-  Backup is non-destructive and allowed for PROD via tool.sh.
-  Destructive operations (restore/drop) are limited to DEV in the wrapper.
-  To restore or drop on PROD you must invoke scripts directly.
+Examples:
+  $SCRIPT_NAME --env prod
+  $SCRIPT_NAME --env staging --debug
 EOF
 }
 
@@ -45,10 +53,21 @@ init_log() { touch "$LOG_FILE" 2>/dev/null || { printf 'WARN: cannot write log f
 require_cmd_or_hint() { local cmd="$1"; command -v "$cmd" >/dev/null 2>&1 || error "Required '$cmd' missing. Use ./scripts/backup_deps.sh --install"; }
 ensure_dependencies() { require_cmd_or_hint "pg_dump"; require_cmd_or_hint "stat"; require_cmd_or_hint "md5sum"; command -v crc32 >/dev/null 2>&1 || log "WARN: 'crc32' not found. Setting CRC32 to N/A."; }
 
-set_env_dev() { log "Selected environment: DEV"; ENVIRONMENT="dev"; FOLDER_NAME="dev"; CONFIG_BASENAME="dev.env"; }
-set_env_prod() { log "Selected environment: PROD"; ENVIRONMENT="prod"; FOLDER_NAME="prod"; CONFIG_BASENAME="prod.env"; }
+set_env() {
+  local env_name="$1"
+  validate_environment "$env_name"
+  log "Selected environment: $env_name"
+  ENVIRONMENT="$env_name"
+  CONFIG_FILE_PATH=$(get_env_file_path "$env_name")
+}
 
-load_config() { [[ -z "$CONFIG_FILE_PATH" ]] && CONFIG_FILE_PATH="${SCRIPTPATH}/../${CONFIG_BASENAME}"; [[ -r "$CONFIG_FILE_PATH" ]] || error "Could not read config file: $CONFIG_FILE_PATH"; log "Loading config from: $CONFIG_FILE_PATH"; set -a; source "$CONFIG_FILE_PATH"; set +a; }
+load_config() {
+  [[ -r "$CONFIG_FILE_PATH" ]] || error "Could not read config file: $CONFIG_FILE_PATH"
+  log "Loading config from: $CONFIG_FILE_PATH"
+  set -a
+  source "$CONFIG_FILE_PATH"
+  set +a
+}
 validate_required_env() {
   local missing=()
   for var in DB_HOST DB_USERNAME DB_PASSWORD DB_DATABASE; do
@@ -61,7 +80,15 @@ validate_required_env() {
   fi
 }
 
-create_backup_folder() { local now="$1"; local backup_folder="${BACKUP_ROOT}/${FOLDER_NAME}/${now}"; [[ -d "$backup_folder" ]] || { mkdir -p "$backup_folder"; log "Created backup folder: $backup_folder"; }; printf '%s\n' "$backup_folder"; }
+create_backup_folder() {
+  local now="$1"
+  local backup_folder="${BACKUP_ROOT}/${ENVIRONMENT}/${now}"
+  [[ -d "$backup_folder" ]] || {
+    mkdir -p "$backup_folder"
+    log "Created backup folder: $backup_folder"
+  }
+  printf '%s\n' "$backup_folder"
+}
 calculate_file_size() { stat --format="%s" "$1"; }
 calculate_md5() { md5sum "$1" | awk '{ print $1 }'; }
 calculate_crc32() { local file="$1"; command -v crc32 >/dev/null 2>&1 && crc32 "$file" || printf 'N/A'; }
@@ -76,7 +103,7 @@ test_connection() {
 backup_db() {
   validate_required_env; ensure_dependencies; test_connection
   local now; now=$(date +"%Y-%m-%d-%H-%M"); local backup_folder; backup_folder=$(create_backup_folder "$now")
-  local backup_file="${backup_folder}/${FOLDER_NAME}.dump"; local metadata_file="${backup_folder}/${FOLDER_NAME}.meta"; local transfer_file="${SCRIPTPATH}/../transfer.dump"
+  local backup_file="${backup_folder}/${ENVIRONMENT}.dump"; local metadata_file="${backup_folder}/${ENVIRONMENT}.meta"; local transfer_file="${PROJECT_ROOT}/transfer.dump"
   log "Starting backup."; log "Database: $DB_DATABASE"; log "Host: $DB_HOST"; log "Backup file: $backup_file"; SECONDS=0
   # Estimar tamaño bruto (no comprimido) para ETA
   local db_estimated_size=0
@@ -145,19 +172,25 @@ backup_db() {
 
 main() {
   init_log
-  local debug_flag=0
   local env_arg=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dev|-d) env_arg="dev" ;;
-      --prod|-p) env_arg="prod" ;;
+      --env|-e) shift; env_arg="${1:-}" ;;
       --debug) BACKUP_DEBUG=1 ;;
       -h|--help) usage; exit 0 ;;
-      *) error "Invalid argument: '$1'" ;;
-    esac; shift
+      *) error "Invalid argument: '$1'. Use --help for usage." ;;
+    esac
+    shift || true
   done
-  [[ -n "$env_arg" ]] || { usage; exit 1; }
-  case "$env_arg" in dev) set_env_dev ;; prod) set_env_prod ;; esac
+  
+  if [[ -z "$env_arg" ]]; then
+    echo "Error: --env <environment> is required"
+    echo
+    usage
+    exit 1
+  fi
+  
+  set_env "$env_arg"
   load_config
   backup_db
 }

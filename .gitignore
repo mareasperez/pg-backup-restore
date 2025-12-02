@@ -1,5 +1,6 @@
 *.sql
 *.env
+!environments/example.env
 *.dump
 *.meta
 *.log

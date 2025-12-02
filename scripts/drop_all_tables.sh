@@ -3,19 +3,29 @@ set -euo pipefail
 
 SCRIPT_NAME=$(basename "$0")
 SCRIPTPATH=$(cd "${0%/*}" && pwd -P)
+PROJECT_ROOT="${TOOL_ROOT:-$SCRIPTPATH/..}"
 
-ENVIRONMENT=""; ENV_FILE=""; ENV_FLAG=""; BACKUP_SCRIPT="${BACKUP_SCRIPT:-$SCRIPTPATH/backup.sh}"
+# Source environment utilities
+source "$SCRIPTPATH/env_utils.sh"
+
+ENVIRONMENT=""; ENV_FILE=""; BACKUP_SCRIPT="${BACKUP_SCRIPT:-$SCRIPTPATH/backup.sh}"
 AUTO_CONFIRM=0; SKIP_BACKUP=0
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 error() { log "ERROR: $*"; exit 1; }
 usage() { cat <<EOF
-Usage: $SCRIPT_NAME [--dev|-d|--prod|-p] [--yes] [--skip-backup]
+Usage: $SCRIPT_NAME --env <environment> [--yes] [--skip-backup]
+
+Available environments:
+$(list_environments | sed 's/^/  - /')
 
 WARNING:
-  Destructive schema reset (drop) is restricted to DEV in the wrapper (tool.sh).
-  To perform a PROD drop you must call this script directly: scripts/drop_all_tables.sh --prod
-  Consider taking a manual backup first even though script auto-backups by default.
+  This will DROP ALL TABLES in the specified environment.
+  A backup is created automatically before dropping (unless --skip-backup is used).
+  
+Options:
+  --yes           Skip confirmation prompt
+  --skip-backup   Skip pre-drop backup (DANGEROUS)
 EOF
 }
 
@@ -23,15 +33,23 @@ parse_args() {
   local env_set=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dev|-d) ENVIRONMENT="dev"; ENV_FILE="$SCRIPTPATH/../dev.env"; ENV_FLAG="--dev"; env_set=1 ;;
-      --prod|-p) ENVIRONMENT="prod"; ENV_FILE="$SCRIPTPATH/../prod.env"; ENV_FLAG="--prod"; env_set=1 ;;
+      --env|-e) shift; ENVIRONMENT="${1:-}"; env_set=1 ;;
       --yes) AUTO_CONFIRM=1 ;;
       --skip-backup) SKIP_BACKUP=1 ;;
       -h|--help) usage; exit 0 ;;
       *) error "Unknown argument: $1" ;;
-    esac; shift
+    esac; shift || true
   done
-  (( env_set == 1 )) || error "You must specify one environment: --dev/-d or --prod/-p"
+  
+  if (( env_set == 0 )); then
+    echo "Error: --env <environment> is required"
+    echo
+    usage
+    exit 1
+  fi
+  
+  validate_environment "$ENVIRONMENT"
+  ENV_FILE=$(get_env_file_path "$ENVIRONMENT")
 }
 
 load_env_file() { [[ -f "$ENV_FILE" && -r "$ENV_FILE" ]] || error "Env file not readable: $ENV_FILE"; log "Environment selected: $ENVIRONMENT"; log "Loading env from: $ENV_FILE"; set -a; source "$ENV_FILE"; set +a; log "Env loaded"; echo "========================================"; echo "DB_DATABASE: ${DB_DATABASE:-<not set>}"; echo "DB_HOST:     ${DB_HOST:-<not set>}"; echo "DB_USERNAME: ${DB_USERNAME:-<not set>}"; echo "DB_PASSWORD: ${DB_PASSWORD:+********}"; echo "DB_PORT:     ${DB_PORT:-<default>}"; echo "========================================"; }
@@ -65,7 +83,9 @@ run_backup_script() {
   (( SKIP_BACKUP == 1 )) && { log "WARNING: Skipping backup (--skip-backup)."; return; }
   [[ -x "$BACKUP_SCRIPT" ]] || error "Backup script not executable: $BACKUP_SCRIPT"
   log "Running backup script before dropping tables..."
-  CONFIG_FILE_PATH="$ENV_FILE" "$BACKUP_SCRIPT" "$ENV_FLAG"; local status=$?; (( status == 0 )) || error "Backup script failed with exit code $status. Aborting drop."
+  CONFIG_FILE_PATH="$ENV_FILE" "$BACKUP_SCRIPT" --env "$ENVIRONMENT"
+  local status=$?
+  (( status == 0 )) || error "Backup script failed with exit code $status. Aborting drop."
   log "Backup completed successfully."
 }
 
