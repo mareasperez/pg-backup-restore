@@ -108,9 +108,28 @@ create_environment_interactive() {
   read -r -p "Database username [postgres]: " db_username
   db_username="${db_username:-postgres}"
   
-  read -r -s -p "Database password: " db_password
-  echo
-  [[ -n "$db_password" ]] || error "Database password is required"
+  # Retry password input up to 3 times
+  local db_password=""
+  local attempts=0
+  local max_attempts=3
+  
+  while (( attempts < max_attempts )); do
+    read -r -s -p "Database password: " db_password
+    echo
+    
+    if [[ -n "$db_password" ]]; then
+      break
+    fi
+    
+    ((attempts++))
+    if (( attempts < max_attempts )); then
+      echo "Password cannot be empty. Please try again. (Attempt $((attempts + 1))/$max_attempts)"
+    fi
+  done
+  
+  if [[ -z "$db_password" ]]; then
+    error "Database password is required. Failed after $max_attempts attempts."
+  fi
   
   create_env_file "$env_name" "$db_host" "$db_port" "$db_database" "$db_username" "$db_password"
 }
