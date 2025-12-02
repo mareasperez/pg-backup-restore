@@ -52,6 +52,8 @@ Backup Operations:
 Restore Operations:
   restore --target <env> [--source <env>] [--latest]
                           Restore from backup (interactive or latest)
+  sync --source <env> --target <env>
+                          Backup source and restore to target (1-step sync)
 
 Maintenance:
   drop --env <name>       Drop all tables (with auto-backup)
@@ -69,8 +71,8 @@ Examples:
   $SCRIPT_NAME env list
   $SCRIPT_NAME env create staging
   $SCRIPT_NAME env test prod
-  $SCRIPT_NAME env create prod postgresql://user:pass@host:5432/dbname
   $SCRIPT_NAME backup --env prod
+  $SCRIPT_NAME sync --source prod --target dev
   $SCRIPT_NAME restore --target dev --source prod --latest
   $SCRIPT_NAME list --env staging
   $SCRIPT_NAME drop --env dev --yes
@@ -212,6 +214,51 @@ cmd_restore() {
   "$RESTORE_SCRIPT" "$@"
 }
 
+cmd_sync() {
+  require_script "$BACKUP_SCRIPT"
+  require_script "$RESTORE_SCRIPT"
+  
+  local source_env=""
+  local target_env=""
+  
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --source|-s) shift; source_env="${1:-}" ;;
+      --target|-t) shift; target_env="${1:-}" ;;
+      --config) shift; CONFIG_FILE_PATH="${1:-}" ;;
+      --backups) shift; BACKUP_ROOT="${1:-}" ;;
+      *) break ;;
+    esac
+    shift || true
+  done
+  
+  [[ -n "$source_env" ]] || error "Usage: $SCRIPT_NAME sync --source <env> --target <env>"
+  [[ -n "$target_env" ]] || error "Usage: $SCRIPT_NAME sync --source <env> --target <env>"
+  
+  # Validate both environments exist
+  validate_environment "$source_env"
+  validate_environment "$target_env"
+  
+  pass_config_env
+  
+  log "Starting sync: $source_env → $target_env"
+  echo
+  echo "This will:"
+  echo "  1. Create a fresh backup of: $source_env"
+  echo "  2. Restore that backup into: $target_env"
+  echo
+  read -r -p "Continue? (y/n): " confirm
+  [[ "$confirm" == "y" ]] || { log "Sync cancelled"; exit 0; }
+  
+  log "Step 1/2: Backing up $source_env..."
+  "$BACKUP_SCRIPT" --env "$source_env"
+  
+  log "Step 2/2: Restoring to $target_env..."
+  "$RESTORE_SCRIPT" --target "$target_env" --source "$source_env" --latest
+  
+  log "Sync complete: $source_env → $target_env"
+}
+
 cmd_drop() {
   require_script "$DROP_SCRIPT"
   local env_name=""
@@ -242,26 +289,48 @@ cmd_deps() {
 
 main() {
   if (( $# < 1 )); then
+    local envs=($(list_environments))
+    local num_envs=${#envs[@]}
+    
     echo "Select an option:"
     echo "  [Environment Management]"
     echo "    1) List environments"
     echo "    2) Create new environment"
-    echo "    3) Remove environment"
-    echo "  [Backup Operations]"
-    local envs=($(list_environments))
-    if (( ${#envs[@]} > 0 )); then
-      local i=4
+    echo "    3) Test environment connection"
+    echo "    4) Remove environment"
+    
+    if (( num_envs > 0 )); then
+      echo "  [Backup Operations]"
+      local i=5
       for env in "${envs[@]}"; do
         echo "    $i) Backup $env"
         ((i++))
       done
+      
+      echo "  [Sync Operations]"
+      local sync_start=$i
+      if (( num_envs >= 2 )); then
+        echo "    $i) Sync between environments"
+        ((i++))
+      fi
+      
+      echo "  [List Backups]"
+      local list_start=$i
       for env in "${envs[@]}"; do
         echo "    $i) List $env backups"
         ((i++))
       done
+      
+      echo "  [Restore Operations]"
+      local restore_start=$i
+      if (( num_envs >= 2 )); then
+        echo "    $i) Restore from another environment"
+        ((i++))
+      fi
     else
       echo "    (No environments configured - create one first)"
     fi
+    
     echo "  [Utilities]"
     echo "    98) Check dependencies"
     echo "    99) Install dependencies"
@@ -280,6 +349,19 @@ main() {
         fi
         ;;
       3)
+        if (( num_envs == 0 )); then
+          echo "No environments available. Create one first."
+          exit 1
+        fi
+        cmd_env list
+        read -r -p "Environment name to test: " name
+        cmd_env test "$name"
+        ;;
+      4)
+        if (( num_envs == 0 )); then
+          echo "No environments available."
+          exit 1
+        fi
         cmd_env list
         read -r -p "Environment name to remove: " name
         cmd_env remove "$name"
@@ -287,15 +369,42 @@ main() {
       98) cmd_deps --check ;;
       99) cmd_deps --install ;;
       *)
-        # Dynamic menu handling for backup/list operations
-        local envs=($(list_environments))
-        local num_envs=${#envs[@]}
-        if (( choice >= 4 && choice < 4 + num_envs )); then
-          local idx=$((choice - 4))
+        # Dynamic menu handling
+        if (( num_envs == 0 )); then
+          echo "Invalid choice"
+          exit 1
+        fi
+        
+        # Backup operations (5 to 5+num_envs-1)
+        if (( choice >= 5 && choice < 5 + num_envs )); then
+          local idx=$((choice - 5))
           cmd_backup --env "${envs[$idx]}"
-        elif (( choice >= 4 + num_envs && choice < 4 + 2 * num_envs )); then
-          local idx=$((choice - 4 - num_envs))
+        
+        # Sync operation
+        elif (( num_envs >= 2 && choice == sync_start )); then
+          echo "Available environments:"
+          for env in "${envs[@]}"; do
+            echo "  - $env"
+          done
+          read -r -p "Source environment: " source
+          read -r -p "Target environment: " target
+          cmd_sync --source "$source" --target "$target"
+        
+        # List backups (after sync)
+        elif (( choice >= list_start && choice < list_start + num_envs )); then
+          local idx=$((choice - list_start))
           cmd_list --env "${envs[$idx]}"
+        
+        # Restore operation
+        elif (( num_envs >= 2 && choice == restore_start )); then
+          echo "Available environments:"
+          for env in "${envs[@]}"; do
+            echo "  - $env"
+          done
+          read -r -p "Source environment (where backup is): " source
+          read -r -p "Target environment (where to restore): " target
+          cmd_restore --target "$target" --source "$source" --latest
+        
         else
           echo "Invalid choice"
           exit 1
@@ -311,6 +420,7 @@ main() {
     backup) cmd_backup "$@" ;;
     list) cmd_list "$@" ;;
     restore) cmd_restore "$@" ;;
+    sync) cmd_sync "$@" ;;
     drop) cmd_drop "$@" ;;
     deps) cmd_deps "$@" ;;
     -h|--help) usage ;;
