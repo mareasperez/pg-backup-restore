@@ -15,7 +15,9 @@ error() { log "ERROR: $*"; exit 1; }
 list_environments() {
   [[ -d "$ENV_DIR" ]] || return 0
   find "$ENV_DIR" -maxdepth 1 -name "*.env" -type f 2>/dev/null | \
-    sed 's|.*/||; s|\.env$||' | sort
+    grep -v "example.env" | \
+    sed 's|.*/||; s|\.env$||' | \
+    sort
 }
 
 # Validate that an environment exists

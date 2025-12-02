@@ -8,6 +8,9 @@ set -euo pipefail
 SCRIPT_NAME=$(basename "$0")
 SCRIPTPATH=$(cd "${0%/*}" && pwd -P)
 
+# Set TOOL_ROOT for scripts to use
+export TOOL_ROOT="$SCRIPTPATH"
+
 BACKUP_SCRIPT="$SCRIPTPATH/scripts/backup.sh"
 RESTORE_SCRIPT="$SCRIPTPATH/scripts/restore_db.sh"
 DROP_SCRIPT="$SCRIPTPATH/scripts/drop_all_tables.sh"
