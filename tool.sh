@@ -27,7 +27,50 @@ LOG_FILE="${LOG_FILE:-$SCRIPTPATH/backup.log}"
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "${LOG_FILE:-/dev/null}" 2>&1; }
 error() { printf '[%s] ERROR: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; exit 1; }
-clear_screen() { clear 2>/dev/null || printf '\033[2J\033[H'; }
+
+# Improved clear_screen for Windows compatibility
+clear_screen() { 
+  # Try native clear first, fall back to simple newlines for Windows
+  if command -v clear >/dev/null 2>&1; then
+    clear 2>/dev/null || printf '\n\n\n'
+  else
+    printf '\n\n\n'
+  fi
+}
+
+# Ensure proper terminal settings for interactive input
+setup_terminal() {
+  # Only run if stdin is a terminal
+  if [ -t 0 ]; then
+    # Save current terminal settings
+    SAVED_STTY=$(stty -g 2>/dev/null || echo "")
+    # Enable echo and proper line buffering
+    stty echo 2>/dev/null || true
+    stty icanon 2>/dev/null || true
+  fi
+}
+
+# Restore terminal settings
+restore_terminal() {
+  if [ -t 0 ] && [ -n "${SAVED_STTY:-}" ]; then
+    stty "$SAVED_STTY" 2>/dev/null || true
+  fi
+}
+
+# Trap to ensure terminal is restored on exit
+trap restore_terminal EXIT INT TERM
+
+# Windows-compatible read function to prevent cursor freezing
+safe_read() {
+  local prompt="$1"
+  local var_name="$2"
+  # Print prompt and flush
+  printf "%s" "$prompt"
+  sync 2>/dev/null || true
+  # Read input
+  read -r "$var_name"
+  sync 2>/dev/null || true
+}
 
 
 # Runtime guard: Linux/WSL only
@@ -251,7 +294,7 @@ cmd_sync() {
   echo "  1. Create a fresh backup of: $source_env"
   echo "  2. Restore that backup into: $target_env"
   echo
-  read -r -p "Continue? (y/n): " confirm
+  safe_read "Continue? (y/n): " confirm
   [[ "$confirm" == "y" ]] || { log "Sync cancelled"; exit 0; }
   
   log "Step 1/2: Backing up $source_env..."
@@ -292,12 +335,17 @@ cmd_deps() {
 }
 
 main() {
+  # Setup terminal for interactive mode
+  setup_terminal
+  
   if (( $# < 1 )); then
     clear_screen
     local envs=($(list_environments))
     local num_envs=${#envs[@]}
     
     echo "Select an option:"
+    # Flush output to prevent buffering issues
+    sync 2>/dev/null || true
     
     if (( num_envs > 0 )); then
       local i=1
@@ -369,7 +417,11 @@ main() {
     echo "    98) Check dependencies"
     echo "    99) Install dependencies"
     
-    read -r -p "Enter number: " choice
+    # Flush output before reading input
+    printf "Enter number: "
+    read -r choice
+    # Flush after reading
+    sync 2>/dev/null || true
     
     case "$choice" in
       98) cmd_deps --check ;;
@@ -379,8 +431,8 @@ main() {
         if (( choice == env_list )); then
           cmd_env list
         elif (( choice == env_create )); then
-          read -r -p "Environment name: " name
-          read -r -p "PostgreSQL URL (or press Enter for interactive): " url
+          safe_read "Environment name: " name
+          safe_read "PostgreSQL URL (or press Enter for interactive): " url
           if [[ -n "$url" ]]; then
             cmd_env create "$name" "$url"
           else
@@ -392,7 +444,7 @@ main() {
             exit 1
           fi
           cmd_env list
-          read -r -p "Environment name to test: " name
+          safe_read "Environment name to test: " name
           cmd_env test "$name"
         elif (( choice == env_remove )); then
           if (( num_envs == 0 )); then
@@ -400,7 +452,7 @@ main() {
             exit 1
           fi
           cmd_env list
-          read -r -p "Environment name to remove: " name
+          safe_read "Environment name to remove: " name
           cmd_env remove "$name"
         
         # Dynamic menu handling for operations
@@ -424,7 +476,7 @@ main() {
           
           # Select source with retries
           while (( attempt < max_attempts )); do
-            read -r -p "Select source environment (number): " source_num
+            safe_read "Select source environment (number): " source_num
             if [[ "$source_num" =~ ^[0-9]+$ ]] && (( source_num >= 1 && source_num <= num_envs )); then
               source="${envs[$((source_num - 1))]}"
               break
@@ -443,7 +495,7 @@ main() {
           # Select target with retries
           attempt=0
           while (( attempt < max_attempts )); do
-            read -r -p "Select target environment (number): " target_num
+            safe_read "Select target environment (number): " target_num
             if [[ "$target_num" =~ ^[0-9]+$ ]] && (( target_num >= 1 && target_num <= num_envs )); then
               target="${envs[$((target_num - 1))]}"
               if [[ "$target" == "$source" ]]; then
@@ -485,7 +537,7 @@ main() {
           
           # Select source with retries
           while (( attempt < max_attempts )); do
-            read -r -p "Select source environment (where backup is) (number): " source_num
+            safe_read "Select source environment (where backup is) (number): " source_num
             if [[ "$source_num" =~ ^[0-9]+$ ]] && (( source_num >= 1 && source_num <= num_envs )); then
               source="${envs[$((source_num - 1))]}"
               break
@@ -504,7 +556,7 @@ main() {
           # Select target with retries
           attempt=0
           while (( attempt < max_attempts )); do
-            read -r -p "Select target environment (where to restore) (number): " target_num
+            safe_read "Select target environment (where to restore) (number): " target_num
             if [[ "$target_num" =~ ^[0-9]+$ ]] && (( target_num >= 1 && target_num <= num_envs )); then
               target="${envs[$((target_num - 1))]}"
               break

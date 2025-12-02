@@ -18,7 +18,8 @@ BACKUP_ROOT="${BACKUP_ROOT:-}"
 ENV_DIR="${ENV_DIR:-}"
 
 NO_PROGRESS=0
-SHOW_LINES=0
+SHOW_LINES=0  # Can be overridden by config.ini or --show-lines flag
+PROGRESS_INTERVAL=10  # Can be overridden by config.ini (seconds between progress updates)
 LATEST=0
 
 # Global variables for backup file paths (set by latest_or_select_backup)
@@ -30,6 +31,20 @@ LOG_FILE="${LOG_FILE:-$PROJECT_ROOT/backup.log}"
 
 log(){ printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>&1; }
 error(){ printf '[%s] ERROR: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; log "ERROR: $*"; exit 1; }
+
+# Windows-compatible read function to prevent cursor freezing
+safe_read() {
+  local prompt="$1"
+  local var_name="$2"
+  # Print prompt and flush
+  printf "%s" "$prompt"
+  # Force flush stdout
+  sync 2>/dev/null || true
+  # Read input
+  read -r "$var_name"
+  # Flush again after reading
+  sync 2>/dev/null || true
+}
 
 
 require_cmd(){ command -v "$1" >/dev/null 2>&1 || error "Missing required command: $1"; }
@@ -52,6 +67,8 @@ load_settings(){
     case "$key" in
       BACKUP_ROOT) [[ -z "$BACKUP_ROOT" ]] && BACKUP_ROOT="$val" ;;
       ENV_DIR) [[ -z "$ENV_DIR" ]] && ENV_DIR="$val" ;;
+      SHOW_LINES) [[ -z "${SHOW_LINES:-}" ]] && SHOW_LINES="$val" ;;
+      PROGRESS_INTERVAL) [[ -z "${PROGRESS_INTERVAL:-}" ]] && PROGRESS_INTERVAL="$val" ;;
     esac
   done < "$file"
 }
@@ -99,7 +116,7 @@ latest_or_select_backup(){
   else
     echo "Latest backup: $(basename "$latest")"
     [[ -f "$latest/$SOURCE_ENV.meta" ]] && cat "$latest/$SOURCE_ENV.meta"
-    read -r -p "Use latest? (y/n) " ans
+    safe_read "Use latest? (y/n) " ans
     if [[ "$ans" == "y" ]]; then
       backup_file="$latest/$SOURCE_ENV.dump"
       metadata_file="$latest/$SOURCE_ENV.meta"
@@ -116,7 +133,7 @@ latest_or_select_backup(){
   done
   (( i > 1 )) || error "No valid backups with dump file."
   while true; do
-    read -r -p "Select backup number: " n
+    safe_read "Select backup number: " n
     if [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n < i )); then
       local chosen="${dirs[n-1]}"
       backup_file="$chosen/$SOURCE_ENV.dump"
@@ -131,7 +148,7 @@ confirm_restore(){
   echo
   echo "About to restore into target DB: $DB_DATABASE on $DB_HOST"
   [[ -f "$metadata_file" ]] && { echo "Source backup metadata:"; cat "$metadata_file"; }
-  read -r -p "Type the database name ('$DB_DATABASE') to confirm: " ans
+  safe_read "Type the database name ('$DB_DATABASE') to confirm: " ans
   [[ "$ans" == "$DB_DATABASE" ]] || error "Confirmation failed."
 }
 
@@ -156,53 +173,132 @@ restore_with_progress(){
   (
     PGPASSWORD="$DB_PASSWORD" pg_restore -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" \
       "${port_arg[@]}" --clean --verbose -F c "$backup_file" 2>"$tmp_log" 1>&2
-  ) & local pid=$!; processed_items=0; echo ""
-
-  # Simple line-by-line output - no terminal manipulation
-  local use_tput=0
+  ) & local pid=$!; processed_items=0
   
-  local elapsed m s last_update=0
-  echo "Progress updates (every 10 seconds):"
+  # Initialize variables
+  local elapsed=0 m=0 s=0 last_update=0 speed=0
+  local max_wait=7200  # 2 hour timeout
+  local last_line_count=0  # Track last line shown for real-time display
+  
+  # Determine update interval and sleep based on SHOW_LINES
+  local update_interval=$PROGRESS_INTERVAL
+  local sleep_interval=5
+  
+  if (( SHOW_LINES == 1 )); then
+    # Real-time mode: check more frequently for new lines
+    sleep_interval=1
+    echo ""
+    echo "Real-time log output (progress updates every $PROGRESS_INTERVAL seconds):"
+    echo ""
+  else
+    # Normal mode: use configured interval
+    sleep_interval=$(( PROGRESS_INTERVAL / 2 ))
+    (( sleep_interval < 1 )) && sleep_interval=1
+    (( sleep_interval > 5 )) && sleep_interval=5
+    echo ""
+    echo "Progress updates (every $PROGRESS_INTERVAL seconds):"
+    echo ""
+  fi
   
   while kill -0 "$pid" 2>/dev/null; do
-    elapsed=$SECONDS; m=$((elapsed/60)); s=$((elapsed%60))
+    # Update elapsed time
+    elapsed=$SECONDS
+    m=$((elapsed/60))
+    s=$((elapsed%60))
     
-    # Only print update every 10 seconds to avoid spam
-    if (( elapsed - last_update >= 10 )); then
-      if (( total_items > 0 )); then
-        processed_items=$(grep -cE '^pg_restore: (creating|processing|restoring|setting)' "$tmp_log" 2>/dev/null || echo 0)
-      else
-        processed_items=$(grep -cE '^pg_restore:' "$tmp_log" 2>/dev/null || echo 0)
+    # Safety timeout to prevent infinite loops
+    if (( elapsed > max_wait )); then
+      echo "WARNING: Restore process exceeded timeout of $((max_wait/60)) minutes"
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      rm -f "$tmp_log"
+      error "Restore process timed out after $((max_wait/60)) minutes"
+    fi
+    
+    # If SHOW_LINES is enabled, display new lines in real-time
+    if (( SHOW_LINES == 1 )); then
+      # Get current line count
+      local current_line_count=$(wc -l < "$tmp_log" 2>/dev/null || echo 0)
+      
+      # If there are new lines, display them
+      if (( current_line_count > last_line_count )); then
+        local lines_to_show=$(( current_line_count - last_line_count ))
+        tail -n "$lines_to_show" "$tmp_log" 2>/dev/null | while IFS= read -r line; do
+          echo "  $line"
+        done
+        last_line_count=$current_line_count
+        sync 2>/dev/null || true
       fi
-      [[ "$processed_items" =~ ^[0-9]+$ ]] || processed_items=0; [[ "$m" =~ ^[0-9]+$ ]] || m=0; [[ "$s" =~ ^[0-9]+$ ]] || s=0
-      local speed=0; if (( elapsed > 5 && processed_items > 0 )); then speed=$(( processed_items / elapsed )); fi
-      eta_display="-"; if (( total_items > 0 && speed > 0 && processed_items < total_items )); then
+    fi
+    
+    # Print progress summary at configured intervals
+    if (( elapsed - last_update >= PROGRESS_INTERVAL )); then
+      # Count processed items
+      if (( total_items > 0 )); then
+        processed_items=$(grep -E '^pg_restore: (creating|processing|restoring|setting)' "$tmp_log" 2>/dev/null | wc -l || echo 0)
+      else
+        processed_items=$(grep -E '^pg_restore:' "$tmp_log" 2>/dev/null | wc -l || echo 0)
+      fi
+      
+      # Sanitize numeric values
+      [[ "$processed_items" =~ ^[0-9]+$ ]] || processed_items=0
+      [[ "$m" =~ ^[0-9]+$ ]] || m=0
+      [[ "$s" =~ ^[0-9]+$ ]] || s=0
+      
+      # Calculate speed and ETA
+      speed=0
+      if (( elapsed > 5 && processed_items > 0 )); then 
+        speed=$(( processed_items / elapsed ))
+      fi
+      
+      eta_display="-"
+      if (( total_items > 0 && speed > 0 && processed_items < total_items )); then
         local remaining=$(( total_items - processed_items ))
         local eta_sec=$(( remaining / speed ))
         if (( eta_sec >= 0 && eta_sec < 43200 )); then
           local eh=$(( eta_sec / 3600 )) em=$(( (eta_sec % 3600) / 60 )) es=$(( eta_sec % 60 ))
-          [[ "$eh" =~ ^[0-9]+$ ]] || eh=0; [[ "$em" =~ ^[0-9]+$ ]] || em=0; [[ "$es" =~ ^[0-9]+$ ]] || es=0
-          if (( eh > 0 )); then eta_display=$(printf "%02d:%02d:%02d" "$eh" "$em" "$es"); else eta_display=$(printf "%02d:%02d" "$em" "$es"); fi
+          [[ "$eh" =~ ^[0-9]+$ ]] || eh=0
+          [[ "$em" =~ ^[0-9]+$ ]] || em=0
+          [[ "$es" =~ ^[0-9]+$ ]] || es=0
+          if (( eh > 0 )); then 
+            eta_display=$(printf "%02d:%02d:%02d" "$eh" "$em" "$es")
+          else 
+            eta_display=$(printf "%02d:%02d" "$em" "$es")
+          fi
         fi
       fi
       
-      # Print progress line
-      printf "[%02d:%02d] Processed %d/%d items | ETA: %s\n" "$m" "$s" "$processed_items" "$total_items" "$eta_display"
-      
-      # Optionally show last line if requested
-      if (( SHOW_LINES == 1 )); then 
-        last_line=$(tail -n 1 "$tmp_log" 2>/dev/null || echo "")
-        [[ -n "$last_line" ]] && echo "  └─ $last_line"
+      # Print progress summary line
+      if (( SHOW_LINES == 1 )); then
+        echo ""
+        printf "━━━ [%02d:%02d] Progress: %d/%d items | Speed: %d/s | ETA: %s ━━━\n" "$m" "$s" "$processed_items" "$total_items" "$speed" "$eta_display"
+        echo ""
+      else
+        printf "[%02d:%02d] Processed %d/%d items | Speed: %d/s | ETA: %s\n" "$m" "$s" "$processed_items" "$total_items" "$speed" "$eta_display"
       fi
+      
+      # Force flush stdout
+      sync 2>/dev/null || true
       
       last_update=$elapsed
     fi
     
-    sleep 2
+    # Sleep based on mode
+    sleep $sleep_interval
   done
-  wait "$pid"; local rc=$?; echo ""
-  if (( rc != 0 )); then log "Restore failed with exit code $rc. Last lines:"; tail -n 10 "$tmp_log" >&2; rm -f "$tmp_log"; error "pg_restore finished with errors"; fi
-  rm -f "$tmp_log"; log "Restore completed successfully at: $(date)"
+  
+  wait "$pid"; local rc=$?
+  echo ""
+  
+  if (( rc != 0 )); then 
+    log "Restore failed with exit code $rc. Last lines:"
+    tail -n 20 "$tmp_log" >&2
+    rm -f "$tmp_log"
+    error "pg_restore finished with errors"
+  fi
+  
+  rm -f "$tmp_log"
+  log "Restore completed successfully at: $(date)"
 }
 
 usage(){ cat <<EOF

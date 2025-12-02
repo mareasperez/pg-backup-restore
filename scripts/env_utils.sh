@@ -12,6 +12,23 @@ LOG_FILE="${LOG_FILE:-$PROJECT_ROOT/backup.log}"
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>&1; }
 error() { printf '[%s] ERROR: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; log "ERROR: $*"; exit 1; }
 
+# Windows-compatible read function to prevent cursor freezing
+safe_read() {
+  local prompt="$1"
+  local var_name="$2"
+  local flags="${3:-}"
+  # Print prompt and flush
+  printf "%s" "$prompt"
+  sync 2>/dev/null || true
+  # Read input with optional flags (like -s for password)
+  if [[ "$flags" == "-s" ]]; then
+    read -r -s "$var_name"
+  else
+    read -r "$var_name"
+  fi
+  sync 2>/dev/null || true
+}
+
 
 # List all available environments
 list_environments() {
@@ -160,16 +177,16 @@ create_environment_interactive() {
   echo "Enter database connection details:"
   echo
   
-  read -r -p "Database host [localhost]: " db_host
+  safe_read "Database host [localhost]: " db_host
   db_host="${db_host:-localhost}"
   
-  read -r -p "Database port [5432]: " db_port
+  safe_read "Database port [5432]: " db_port
   db_port="${db_port:-5432}"
   
-  read -r -p "Database name: " db_database
+  safe_read "Database name: " db_database
   [[ -n "$db_database" ]] || error "Database name is required"
   
-  read -r -p "Database username [postgres]: " db_username
+  safe_read "Database username [postgres]: " db_username
   db_username="${db_username:-postgres}"
   
   # Retry password input up to 3 times
@@ -178,7 +195,7 @@ create_environment_interactive() {
   local max_attempts=3
   
   while (( attempts < max_attempts )); do
-    read -r -s -p "Database password: " db_password
+    safe_read "Database password: " db_password "-s"
     echo
     
     if [[ -n "$db_password" ]]; then
@@ -214,7 +231,7 @@ create_environment_from_url() {
   echo "  Password: ${PARSED_DB_PASSWORD:+********}"
   echo
   
-  read -r -p "Create environment with these settings? (y/n): " confirm
+  safe_read "Create environment with these settings? (y/n): " confirm
   [[ "$confirm" == "y" ]] || error "Environment creation cancelled"
   
   create_env_file "$env_name" "$PARSED_DB_HOST" "$PARSED_DB_PORT" \
@@ -234,7 +251,7 @@ create_env_file() {
   
   # Check if environment already exists
   if [[ -f "$env_file" ]]; then
-    read -r -p "Environment '$env_name' already exists. Overwrite? (y/n): " overwrite
+    safe_read "Environment '$env_name' already exists. Overwrite? (y/n): " overwrite
     [[ "$overwrite" == "y" ]] || error "Environment creation cancelled"
   fi
   
@@ -267,7 +284,7 @@ remove_environment() {
   echo "WARNING: This will delete the environment configuration for '$env_name'"
   echo "Backups in backups/$env_name/ will NOT be deleted."
   echo
-  read -r -p "Type the environment name to confirm deletion: " confirm
+  safe_read "Type the environment name to confirm deletion: " confirm
   
   [[ "$confirm" == "$env_name" ]] || error "Confirmation failed. Environment not deleted."
   

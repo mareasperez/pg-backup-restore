@@ -135,18 +135,23 @@ PROGRESS_INTERVAL=1
 
 [restore]
 DEFAULT_SOURCE=prod
+SHOW_LINES=0
 ```
 
-Implemented keys today:
+Implemented keys:
 - BACKUP_ROOT: Root directory containing per-environment timestamp folders.
 - LOG_FILE: Shared log file for backup runs.
 - TIMESTAMP_FORMAT: Naming pattern for new backup folders (existing ones unchanged).
-- PROGRESS_INTERVAL: Polling interval hook (currently fixed at 1s; future use).
+- PROGRESS_INTERVAL: Update interval in seconds for progress bars (default: 1s for backup, 10s for restore).
+- DEFAULT_SOURCE: Default source environment for restore operations.
+- SHOW_LINES: Show pg_restore log lines during restore (0=off, 1=on). Can be overridden with `--show-lines` flag.
 
 Override examples (env var precedence):
 ```
 BACKUP_ROOT=/data/bk LOG_FILE=/var/log/db-bk.log ./tool.sh backup --prod
 TIMESTAMP_FORMAT=%Y%m%d-%H%M GLOBAL_CONFIG_FILE=/etc/pgtool/config.ini ./tool.sh sync-dev --dev
+SHOW_LINES=1 ./scripts/restore_db.sh --target dev --source prod
+PROGRESS_INTERVAL=5 ./scripts/restore_db.sh --target dev --source prod
 ```
 
 Manual PROD destructive operations (run underlying scripts directly):

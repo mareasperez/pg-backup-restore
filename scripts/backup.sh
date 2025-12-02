@@ -64,6 +64,20 @@ set_env() {
 load_config() {
   [[ -r "$CONFIG_FILE_PATH" ]] || error "Could not read config file: $CONFIG_FILE_PATH"
   log "Loading config from: $CONFIG_FILE_PATH"
+  
+  # Read config file manually to handle keys
+  while IFS='=' read -r k v; do
+    local key="$(echo "$k" | sed 's/[[:space:]]//g')"
+    [[ -z "$key" ]] && continue
+    case "$key" in
+      \#*|\;*|\[*\]) continue ;;
+    esac
+    local val="$(echo "$v" | sed 's/^ *//;s/ *$//;s/\r$//')"
+    case "$key" in
+      PROGRESS_INTERVAL) [[ -z "${PROGRESS_INTERVAL:-}" ]] && PROGRESS_INTERVAL="$val" ;;
+    esac
+  done < "$CONFIG_FILE_PATH"
+
   set -a
   source "$CONFIG_FILE_PATH"
   set +a
@@ -152,7 +166,10 @@ backup_db() {
     else
       printf "Elapsed %02d:%02d | awaiting dump creation...\r" "$m" "$s"
     fi
-    sleep 1
+    
+    # Use configured interval (default 1s)
+    : "${PROGRESS_INTERVAL:=1}"
+    sleep "$PROGRESS_INTERVAL"
   done
   wait "$pid"
   local rc=$?
