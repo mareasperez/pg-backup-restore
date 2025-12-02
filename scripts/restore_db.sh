@@ -158,33 +158,49 @@ restore_with_progress(){
       "${port_arg[@]}" --clean --verbose -F c "$backup_file" 2>"$tmp_log" 1>&2
   ) & local pid=$!; processed_items=0; echo ""
 
-  local use_tput=0; if [ -t 1 ] && command -v tput >/dev/null 2>&1; then use_tput=1; tput civis; trap 'tput cnorm' EXIT; fi
-  local elapsed m s
+  # Simple line-by-line output - no terminal manipulation
+  local use_tput=0
+  
+  local elapsed m s last_update=0
+  echo "Progress updates (every 10 seconds):"
+  
   while kill -0 "$pid" 2>/dev/null; do
     elapsed=$SECONDS; m=$((elapsed/60)); s=$((elapsed%60))
-    if (( total_items > 0 )); then
-      processed_items=$(grep -cE '^pg_restore: (creating|processing|restoring|setting)' "$tmp_log" 2>/dev/null || echo 0)
-    else
-      processed_items=$(grep -cE '^pg_restore:' "$tmp_log" 2>/dev/null || echo 0)
-    fi
-    [[ "$processed_items" =~ ^[0-9]+$ ]] || processed_items=0; [[ "$m" =~ ^[0-9]+$ ]] || m=0; [[ "$s" =~ ^[0-9]+$ ]] || s=0
-    local speed=0; if (( elapsed > 5 && processed_items > 0 )); then speed=$(( processed_items / elapsed )); fi
-    eta_display="-"; if (( total_items > 0 && speed > 0 && processed_items < total_items )); then
-      local remaining=$(( total_items - processed_items )) eta_sec=$(( remaining / speed ))
-      if (( eta_sec >= 0 && eta_sec < 43200 )); then
-        local eh=$(( eta_sec / 3600 )) em=$(( (eta_sec % 3600) / 60 )) es=$(( eta_sec % 60 ))
-        [[ "$eh" =~ ^[0-9]+$ ]] || eh=0; [[ "$em" =~ ^[0-9]+$ ]] || em=0; [[ "$es" =~ ^[0-9]+$ ]] || es=0
-        if (( eh > 0 )); then eta_display=$(printf "%02d:%02d:%02d" "$eh" "$em" "$es"); else eta_display=$(printf "%02d:%02d" "$em" "$es"); fi
+    
+    # Only print update every 10 seconds to avoid spam
+    if (( elapsed - last_update >= 10 )); then
+      if (( total_items > 0 )); then
+        processed_items=$(grep -cE '^pg_restore: (creating|processing|restoring|setting)' "$tmp_log" 2>/dev/null || echo 0)
+      else
+        processed_items=$(grep -cE '^pg_restore:' "$tmp_log" 2>/dev/null || echo 0)
       fi
+      [[ "$processed_items" =~ ^[0-9]+$ ]] || processed_items=0; [[ "$m" =~ ^[0-9]+$ ]] || m=0; [[ "$s" =~ ^[0-9]+$ ]] || s=0
+      local speed=0; if (( elapsed > 5 && processed_items > 0 )); then speed=$(( processed_items / elapsed )); fi
+      eta_display="-"; if (( total_items > 0 && speed > 0 && processed_items < total_items )); then
+        local remaining=$(( total_items - processed_items ))
+        local eta_sec=$(( remaining / speed ))
+        if (( eta_sec >= 0 && eta_sec < 43200 )); then
+          local eh=$(( eta_sec / 3600 )) em=$(( (eta_sec % 3600) / 60 )) es=$(( eta_sec % 60 ))
+          [[ "$eh" =~ ^[0-9]+$ ]] || eh=0; [[ "$em" =~ ^[0-9]+$ ]] || em=0; [[ "$es" =~ ^[0-9]+$ ]] || es=0
+          if (( eh > 0 )); then eta_display=$(printf "%02d:%02d:%02d" "$eh" "$em" "$es"); else eta_display=$(printf "%02d:%02d" "$em" "$es"); fi
+        fi
+      fi
+      
+      # Print progress line
+      printf "[%02d:%02d] Processed %d/%d items | ETA: %s\n" "$m" "$s" "$processed_items" "$total_items" "$eta_display"
+      
+      # Optionally show last line if requested
+      if (( SHOW_LINES == 1 )); then 
+        last_line=$(tail -n 1 "$tmp_log" 2>/dev/null || echo "")
+        [[ -n "$last_line" ]] && echo "  └─ $last_line"
+      fi
+      
+      last_update=$elapsed
     fi
-    if (( SHOW_LINES == 1 )); then last_line=$(tail -n 1 "$tmp_log" 2>/dev/null || echo ""); else last_line=""; fi
-    if (( use_tput == 1 )); then tput sc; tput cup 0 0; printf "Elapsed %02d:%02d | Items %d/%d | ETA %s" "$m" "$s" "$processed_items" "$total_items" "$eta_display"
-      [[ -n "$last_line" ]] && printf " | %s" "$last_line"; printf '\033[K'; tput rc; else
-      if [[ -n "$last_line" ]]; then printf "Elapsed %02d:%02d | Items %d/%d | ETA %s | %s\r" "$m" "$s" "$processed_items" "$total_items" "$eta_display" "$last_line"; else
-        printf "Elapsed %02d:%02d | Items %d/%d | ETA %s\r" "$m" "$s" "$processed_items" "$total_items" "$eta_display"; fi; fi
-    sleep 1
+    
+    sleep 2
   done
-  wait "$pid"; local rc=$?; if (( use_tput == 1 )); then tput cnorm; trap - EXIT; fi; printf "\n"
+  wait "$pid"; local rc=$?; echo ""
   if (( rc != 0 )); then log "Restore failed with exit code $rc. Last lines:"; tail -n 10 "$tmp_log" >&2; rm -f "$tmp_log"; error "pg_restore finished with errors"; fi
   rm -f "$tmp_log"; log "Restore completed successfully at: $(date)"
 }
@@ -257,7 +273,17 @@ main(){
   fi
   
   # Test connection before attempting restore
+  echo ""
+  echo "🔍 Testing connection to target database..."
   test_environment "$TARGET_ENV"
+  
+  echo ""
+  echo "📦 Backup file: $backup_file"
+  echo "📊 Backup size: $(du -h "$backup_file" 2>/dev/null | cut -f1 || echo 'unknown')"
+  echo ""
+  echo "🚀 Starting restore process..."
+  echo "⏳ This may take several minutes depending on database size."
+  echo ""
   
   restore_with_progress
 }
