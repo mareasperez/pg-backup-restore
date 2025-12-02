@@ -34,6 +34,68 @@ get_env_file_path() {
   echo "$ENV_DIR/${env_name}.env"
 }
 
+# Test database connection for an environment
+test_environment() {
+  local env_name="$1"
+  validate_environment "$env_name"
+  
+  local env_file=$(get_env_file_path "$env_name")
+  
+  log "Testing connection for environment: $env_name"
+  log "Loading configuration from: $env_file"
+  
+  # Load environment variables
+  set -a
+  source "$env_file"
+  set +a
+  
+  # Validate required variables
+  local missing=()
+  for var in DB_HOST DB_USERNAME DB_PASSWORD DB_DATABASE; do
+    if [[ -z "${!var:-}" ]]; then
+      missing+=("$var")
+    fi
+  done
+  
+  if (( ${#missing[@]} > 0 )); then
+    error "Missing required variables in $env_file: ${missing[*]}"
+  fi
+  
+  local port="${DB_PORT:-5432}"
+  
+  echo "Connection details:"
+  echo "  Host:     $DB_HOST"
+  echo "  Port:     $port"
+  echo "  Database: $DB_DATABASE"
+  echo "  Username: $DB_USERNAME"
+  echo
+  
+  # Check if psql is available
+  if ! command -v psql >/dev/null 2>&1; then
+    error "psql command not found. Install postgresql-client to test connections."
+  fi
+  
+  log "Attempting connection..."
+  
+  # Test connection with SELECT 1
+  if PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" -p "$port" -t -A -c 'SELECT 1;' >/dev/null 2>&1; then
+    echo "✅ Connection successful!"
+    log "Database connection test passed for environment: $env_name"
+    return 0
+  else
+    echo "❌ Connection failed!"
+    log "Database connection test failed for environment: $env_name"
+    echo
+    echo "Possible issues:"
+    echo "  - Incorrect host, port, or database name"
+    echo "  - Invalid username or password"
+    echo "  - Database server is not running or not accessible"
+    echo "  - Firewall blocking connection"
+    echo "  - Network/VPN issues"
+    return 1
+  fi
+}
+
 # Parse PostgreSQL connection URL
 # Format: postgresql://[user[:password]@][host][:port][/database][?param=value]
 parse_postgres_url() {
@@ -236,8 +298,12 @@ main() {
       validate_environment "$2"
       echo "Environment '$2' is valid"
       ;;
+    test)
+      [[ -n "${2:-}" ]] || error "Usage: $0 test <env_name>"
+      test_environment "$2"
+      ;;
     *)
-      echo "Usage: $0 {list|create|remove|validate} [args...]"
+      echo "Usage: $0 {list|create|remove|validate|test} [args...]"
       exit 1
       ;;
   esac

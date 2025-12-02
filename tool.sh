@@ -42,6 +42,7 @@ Environment Management:
   env list                List all available environments
   env create <name>       Create new environment (interactive or from URL)
   env remove <name>       Remove an environment
+  env test <name>         Test database connection for an environment
   env migrate             Migrate old .env files to environments/ directory
 
 Backup Operations:
@@ -67,6 +68,7 @@ Options:
 Examples:
   $SCRIPT_NAME env list
   $SCRIPT_NAME env create staging
+  $SCRIPT_NAME env test prod
   $SCRIPT_NAME env create prod postgresql://user:pass@host:5432/dbname
   $SCRIPT_NAME backup --env prod
   $SCRIPT_NAME restore --target dev --source prod --latest
@@ -114,12 +116,17 @@ cmd_env() {
       [[ -n "$env_name" ]] || error "Usage: $SCRIPT_NAME env remove <name>"
       remove_environment "$env_name"
       ;;
+    test)
+      local env_name="${1:-}"
+      [[ -n "$env_name" ]] || error "Usage: $SCRIPT_NAME env test <name>"
+      test_environment "$env_name"
+      ;;
     migrate)
       cmd_migrate_envs
       ;;
     *)
       echo "Unknown env command: $subcmd"
-      echo "Usage: $SCRIPT_NAME env {list|create|remove|migrate}"
+      echo "Usage: $SCRIPT_NAME env {list|create|remove|test|migrate}"
       exit 1
       ;;
   esac
