@@ -151,8 +151,9 @@ restore_with_progress(){
   ) & local pid=$!; processed_items=0; echo ""
 
   local use_tput=0; if [ -t 1 ] && command -v tput >/dev/null 2>&1; then use_tput=1; tput civis; trap 'tput cnorm' EXIT; fi
+  local elapsed m s
   while kill -0 "$pid" 2>/dev/null; do
-    local elapsed=$SECONDS m=$((elapsed/60)) s=$((elapsed%60))
+    elapsed=$SECONDS; m=$((elapsed/60)); s=$((elapsed%60))
     if (( total_items > 0 )); then
       processed_items=$(grep -cE '^pg_restore: (creating|processing|restoring|setting)' "$tmp_log" 2>/dev/null || echo 0)
     else

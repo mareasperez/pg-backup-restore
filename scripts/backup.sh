@@ -122,12 +122,13 @@ backup_db() {
     pg_dump -h "$DB_HOST" -U "$DB_USERNAME" -d "$DB_DATABASE" -p "${DB_PORT:-5432}" -Fc --create -f "$backup_file" 2>&1 | sed 's/^/[pg_dump] /'
   ) &
   local pid=$!
-  local last_size=0
-  local avg_speed=0
+  # Monitorear progreso
+  local last_size=0 stall_count=0 max_stalls=10
+  local elapsed m s
   while kill -0 "$pid" 2>/dev/null; do
-    local elapsed=$SECONDS
-    local m=$(( elapsed / 60 ))
-    local s=$(( elapsed % 60 ))
+    elapsed=$SECONDS
+    m=$(( elapsed / 60 ))
+    s=$(( elapsed % 60 ))
     local eta="-"
     if [[ -f "$backup_file" ]]; then
       local size_bytes
