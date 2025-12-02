@@ -293,27 +293,39 @@ main() {
     local num_envs=${#envs[@]}
     
     echo "Select an option:"
-    echo "  [Environment Management]"
-    echo "    1) List environments"
-    echo "    2) Create new environment"
-    echo "    3) Test environment connection"
-    echo "    4) Remove environment"
     
     if (( num_envs > 0 )); then
+      local i=1
+      
+      # Sync Operations (most important)
+      echo "  [Sync Operations]"
+      if (( num_envs >= 2 )); then
+        echo "    $i) Sync between environments"
+        local sync_option=$i
+        ((i++))
+      else
+        echo "    (Need at least 2 environments)"
+      fi
+      
+      # Restore Operations
+      echo "  [Restore Operations]"
+      if (( num_envs >= 2 )); then
+        echo "    $i) Restore from another environment"
+        local restore_option=$i
+        ((i++))
+      else
+        echo "    (Need at least 2 environments)"
+      fi
+      
+      # Backup Operations
       echo "  [Backup Operations]"
-      local i=5
+      local backup_start=$i
       for env in "${envs[@]}"; do
         echo "    $i) Backup $env"
         ((i++))
       done
       
-      echo "  [Sync Operations]"
-      local sync_start=$i
-      if (( num_envs >= 2 )); then
-        echo "    $i) Sync between environments"
-        ((i++))
-      fi
-      
+      # List Backups
       echo "  [List Backups]"
       local list_start=$i
       for env in "${envs[@]}"; do
@@ -321,14 +333,31 @@ main() {
         ((i++))
       done
       
-      echo "  [Restore Operations]"
-      local restore_start=$i
-      if (( num_envs >= 2 )); then
-        echo "    $i) Restore from another environment"
-        ((i++))
-      fi
+      # Environment Management (less important, at the end)
+      echo "  [Environment Management]"
+      local env_list=$i
+      echo "    $i) List environments"
+      ((i++))
+      local env_create=$i
+      echo "    $i) Create new environment"
+      ((i++))
+      local env_test=$i
+      echo "    $i) Test environment connection"
+      ((i++))
+      local env_remove=$i
+      echo "    $i) Remove environment"
+      ((i++))
     else
-      echo "    (No environments configured - create one first)"
+      echo "  (No environments configured - create one first)"
+      echo "  [Environment Management]"
+      local env_list=1
+      echo "    1) List environments"
+      local env_create=2
+      echo "    2) Create new environment"
+      local env_test=3
+      echo "    3) Test environment connection"
+      local env_remove=4
+      echo "    4) Remove environment"
     fi
     
     echo "  [Utilities]"
@@ -338,50 +367,44 @@ main() {
     read -r -p "Enter number: " choice
     
     case "$choice" in
-      1) cmd_env list ;;
-      2) 
-        read -r -p "Environment name: " name
-        read -r -p "PostgreSQL URL (or press Enter for interactive): " url
-        if [[ -n "$url" ]]; then
-          cmd_env create "$name" "$url"
-        else
-          cmd_env create "$name"
-        fi
-        ;;
-      3)
-        if (( num_envs == 0 )); then
-          echo "No environments available. Create one first."
-          exit 1
-        fi
-        cmd_env list
-        read -r -p "Environment name to test: " name
-        cmd_env test "$name"
-        ;;
-      4)
-        if (( num_envs == 0 )); then
-          echo "No environments available."
-          exit 1
-        fi
-        cmd_env list
-        read -r -p "Environment name to remove: " name
-        cmd_env remove "$name"
-        ;;
       98) cmd_deps --check ;;
       99) cmd_deps --install ;;
       *)
-        # Dynamic menu handling
-        if (( num_envs == 0 )); then
+        # Handle environment management options
+        if (( choice == env_list )); then
+          cmd_env list
+        elif (( choice == env_create )); then
+          read -r -p "Environment name: " name
+          read -r -p "PostgreSQL URL (or press Enter for interactive): " url
+          if [[ -n "$url" ]]; then
+            cmd_env create "$name" "$url"
+          else
+            cmd_env create "$name"
+          fi
+        elif (( choice == env_test )); then
+          if (( num_envs == 0 )); then
+            echo "No environments available. Create one first."
+            exit 1
+          fi
+          cmd_env list
+          read -r -p "Environment name to test: " name
+          cmd_env test "$name"
+        elif (( choice == env_remove )); then
+          if (( num_envs == 0 )); then
+            echo "No environments available."
+            exit 1
+          fi
+          cmd_env list
+          read -r -p "Environment name to remove: " name
+          cmd_env remove "$name"
+        
+        # Dynamic menu handling for operations
+        elif (( num_envs == 0 )); then
           echo "Invalid choice"
           exit 1
-        fi
-        
-        # Backup operations (5 to 5+num_envs-1)
-        if (( choice >= 5 && choice < 5 + num_envs )); then
-          local idx=$((choice - 5))
-          cmd_backup --env "${envs[$idx]}"
         
         # Sync operation
-        elif (( num_envs >= 2 && choice == sync_start )); then
+        elif (( num_envs >= 2 && choice == sync_option )); then
           echo "Available environments:"
           local idx=1
           for env in "${envs[@]}"; do
@@ -441,13 +464,8 @@ main() {
           echo
           cmd_sync --source "$source" --target "$target"
         
-        # List backups (after sync)
-        elif (( choice >= list_start && choice < list_start + num_envs )); then
-          local idx=$((choice - list_start))
-          cmd_list --env "${envs[$idx]}"
-        
         # Restore operation
-        elif (( num_envs >= 2 && choice == restore_start )); then
+        elif (( num_envs >= 2 && choice == restore_option )); then
           echo "Available environments:"
           local idx=1
           for env in "${envs[@]}"; do
@@ -502,6 +520,16 @@ main() {
           echo "   ./tool.sh restore --target $target --source $source --latest"
           echo
           cmd_restore --target "$target" --source "$source" --latest
+        
+        # Backup operations
+        elif (( choice >= backup_start && choice < list_start )); then
+          local idx=$((choice - backup_start))
+          cmd_backup --env "${envs[$idx]}"
+        
+        # List backups
+        elif (( choice >= list_start && choice < list_start + num_envs )); then
+          local idx=$((choice - list_start))
+          cmd_list --env "${envs[$idx]}"
         
         else
           echo "Invalid choice"
