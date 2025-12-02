@@ -21,8 +21,16 @@ NO_PROGRESS=0
 SHOW_LINES=0
 LATEST=0
 
-log(){ printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
-error(){ log "ERROR: $*"; exit 1; }
+# Global variables for backup file paths (set by latest_or_select_backup)
+backup_file=""
+metadata_file=""
+
+
+LOG_FILE="${LOG_FILE:-$PROJECT_ROOT/backup.log}"
+
+log(){ printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>&1; }
+error(){ printf '[%s] ERROR: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; log "ERROR: $*"; exit 1; }
+
 
 require_cmd(){ command -v "$1" >/dev/null 2>&1 || error "Missing required command: $1"; }
 
@@ -242,6 +250,15 @@ main(){
 
   load_target_config
   latest_or_select_backup
+  
+  # Add confirmation unless --latest flag is used (automated mode)
+  if (( LATEST == 0 )); then
+    confirm_restore
+  fi
+  
+  # Test connection before attempting restore
+  test_environment "$TARGET_ENV"
+  
   restore_with_progress
 }
 

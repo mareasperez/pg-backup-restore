@@ -7,9 +7,11 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "${0%/*}" && pwd -P)
 PROJECT_ROOT="${TOOL_ROOT:-$SCRIPT_DIR/..}"
 ENV_DIR="${ENV_DIR:-$PROJECT_ROOT/environments}"
+LOG_FILE="${LOG_FILE:-$PROJECT_ROOT/backup.log}"
 
-log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
-error() { log "ERROR: $*"; exit 1; }
+log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>&1; }
+error() { printf '[%s] ERROR: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; log "ERROR: $*"; exit 1; }
+
 
 # List all available environments
 list_environments() {

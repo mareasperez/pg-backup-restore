@@ -22,9 +22,13 @@ source "$ENV_UTILS"
 
 CONFIG_FILE_PATH="${CONFIG_FILE_PATH:-}"
 BACKUP_ROOT="${BACKUP_ROOT:-}"
+LOG_FILE="${LOG_FILE:-$SCRIPTPATH/backup.log}"
 
-log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
-error() { log "ERROR: $*"; exit 1; }
+
+log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "${LOG_FILE:-/dev/null}" 2>&1; }
+error() { printf '[%s] ERROR: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; exit 1; }
+clear_screen() { clear 2>/dev/null || printf '\033[2J\033[H'; }
+
 
 # Runtime guard: Linux/WSL only
 case "$(uname -s 2>/dev/null || echo unknown)" in
@@ -289,6 +293,7 @@ cmd_deps() {
 
 main() {
   if (( $# < 1 )); then
+    clear_screen
     local envs=($(list_environments))
     local num_envs=${#envs[@]}
     
