@@ -383,11 +383,62 @@ main() {
         # Sync operation
         elif (( num_envs >= 2 && choice == sync_start )); then
           echo "Available environments:"
+          local idx=1
           for env in "${envs[@]}"; do
-            echo "  - $env"
+            echo "  $idx) $env"
+            ((idx++))
           done
-          read -r -p "Source environment: " source
-          read -r -p "Target environment: " target
+          echo
+          
+          local source="" target=""
+          local max_attempts=3
+          local attempt=0
+          
+          # Select source with retries
+          while (( attempt < max_attempts )); do
+            read -r -p "Select source environment (number): " source_num
+            if [[ "$source_num" =~ ^[0-9]+$ ]] && (( source_num >= 1 && source_num <= num_envs )); then
+              source="${envs[$((source_num - 1))]}"
+              break
+            fi
+            ((attempt++))
+            if (( attempt < max_attempts )); then
+              echo "Invalid selection. Please enter a number between 1 and $num_envs. (Attempt $((attempt + 1))/$max_attempts)"
+            fi
+          done
+          
+          if [[ -z "$source" ]]; then
+            echo "Failed to select source environment after $max_attempts attempts."
+            exit 1
+          fi
+          
+          # Select target with retries
+          attempt=0
+          while (( attempt < max_attempts )); do
+            read -r -p "Select target environment (number): " target_num
+            if [[ "$target_num" =~ ^[0-9]+$ ]] && (( target_num >= 1 && target_num <= num_envs )); then
+              target="${envs[$((target_num - 1))]}"
+              if [[ "$target" == "$source" ]]; then
+                echo "Target cannot be the same as source. Please select a different environment."
+                continue
+              fi
+              break
+            fi
+            ((attempt++))
+            if (( attempt < max_attempts )); then
+              echo "Invalid selection. Please enter a number between 1 and $num_envs. (Attempt $((attempt + 1))/$max_attempts)"
+            fi
+          done
+          
+          if [[ -z "$target" ]]; then
+            echo "Failed to select target environment after $max_attempts attempts."
+            exit 1
+          fi
+          
+          echo
+          echo "📋 Equivalent CLI command:"
+          echo "   ./tool.sh sync --source $source --target $target"
+          echo
           cmd_sync --source "$source" --target "$target"
         
         # List backups (after sync)
@@ -398,11 +449,58 @@ main() {
         # Restore operation
         elif (( num_envs >= 2 && choice == restore_start )); then
           echo "Available environments:"
+          local idx=1
           for env in "${envs[@]}"; do
-            echo "  - $env"
+            echo "  $idx) $env"
+            ((idx++))
           done
-          read -r -p "Source environment (where backup is): " source
-          read -r -p "Target environment (where to restore): " target
+          echo
+          
+          local source="" target=""
+          local max_attempts=3
+          local attempt=0
+          
+          # Select source with retries
+          while (( attempt < max_attempts )); do
+            read -r -p "Select source environment (where backup is) (number): " source_num
+            if [[ "$source_num" =~ ^[0-9]+$ ]] && (( source_num >= 1 && source_num <= num_envs )); then
+              source="${envs[$((source_num - 1))]}"
+              break
+            fi
+            ((attempt++))
+            if (( attempt < max_attempts )); then
+              echo "Invalid selection. Please enter a number between 1 and $num_envs. (Attempt $((attempt + 1))/$max_attempts)"
+            fi
+          done
+          
+          if [[ -z "$source" ]]; then
+            echo "Failed to select source environment after $max_attempts attempts."
+            exit 1
+          fi
+          
+          # Select target with retries
+          attempt=0
+          while (( attempt < max_attempts )); do
+            read -r -p "Select target environment (where to restore) (number): " target_num
+            if [[ "$target_num" =~ ^[0-9]+$ ]] && (( target_num >= 1 && target_num <= num_envs )); then
+              target="${envs[$((target_num - 1))]}"
+              break
+            fi
+            ((attempt++))
+            if (( attempt < max_attempts )); then
+              echo "Invalid selection. Please enter a number between 1 and $num_envs. (Attempt $((attempt + 1))/$max_attempts)"
+            fi
+          done
+          
+          if [[ -z "$target" ]]; then
+            echo "Failed to select target environment after $max_attempts attempts."
+            exit 1
+          fi
+          
+          echo
+          echo "📋 Equivalent CLI command:"
+          echo "   ./tool.sh restore --target $target --source $source --latest"
+          echo
           cmd_restore --target "$target" --source "$source" --latest
         
         else
