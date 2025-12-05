@@ -39,9 +39,11 @@ dotnet run --project src/DbTool.CLI -- list-backups --db prod
 - ✅ **Multi-Database Support** - PostgreSQL, MySQL, SQL Server, MariaDB
 - ✅ **Cross-Platform** - Works on Windows, Linux, macOS
 - ✅ **Native .NET Drivers** - Uses official database drivers (Npgsql, MySqlConnector, etc.)
-- ✅ **Clean Architecture** - N-tier design with Domain, Application, Infrastructure, CLI layers
+- ✅ **Clean Architecture** - N-tier design with Domain, Application, Infrastructure, CLI, UI layers
 - ✅ **Self-Contained** - Can be published as a single executable
 - ✅ **SQLite Configuration** - Local database for connection management
+- ✅ **Optional Compression** - Gzip compression (disabled by default)
+- ✅ **CLI & GUI** - Command-line interface and Avalonia desktop application
 - ✅ **GUI-Ready** - Core logic ready for future GUI implementation
 
 ---
