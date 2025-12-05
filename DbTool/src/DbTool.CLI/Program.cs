@@ -207,8 +207,71 @@ listBackupsCommand.SetHandler(async (dbName) =>
     }
 }, listBackupsDbOption);
 
+// Restore command
+var restoreCommand = new Command("restore", "Restore a database from a backup file");
+var restoreDbOption = new Option<string>("--db", "Database connection name") { IsRequired = true };
+var restoreFileOption = new Option<string>("--file", "Path to backup file") { IsRequired = true };
+var restoreForceOption = new Option<bool>("--force", "Skip confirmation prompt");
+restoreCommand.AddOption(restoreDbOption);
+restoreCommand.AddOption(restoreFileOption);
+restoreCommand.AddOption(restoreForceOption);
+
+restoreCommand.SetHandler(async (dbName, backupFile, force) =>
+{
+    var backupService = serviceProvider.GetRequiredService<IBackupService>();
+    
+    try
+    {
+        // Validate file exists
+        if (!File.Exists(backupFile))
+        {
+            Console.WriteLine($"✗ Error: Backup file not found: {backupFile}");
+            Environment.Exit(1);
+            return;
+        }
+
+        // Safety confirmation
+        if (!force)
+        {
+            Console.WriteLine($"\n⚠️  WARNING: This will restore the database '{dbName}' from:");
+            Console.WriteLine($"   {backupFile}");
+            Console.WriteLine($"\n   This operation will overwrite existing data!");
+            Console.Write($"\nContinue? (yes/N): ");
+            
+            var response = Console.ReadLine()?.Trim().ToLowerInvariant();
+            if (response != "yes")
+            {
+                Console.WriteLine("Restore cancelled.");
+                Environment.Exit(0);
+                return;
+            }
+        }
+
+        var progress = new Progress<string>(msg => Console.WriteLine(msg));
+        var result = await backupService.RestoreBackupAsync(dbName, backupFile, progress);
+        
+        if (result.Success)
+        {
+            Console.WriteLine($"\n✓ Restore completed successfully");
+            Console.WriteLine($"  Database: {result.DatabaseName}");
+            Console.WriteLine($"  From: {result.BackupFilePath}");
+        }
+        else
+        {
+            Console.WriteLine($"\n✗ Restore failed: {result.ErrorMessage}");
+            Environment.Exit(1);
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"✗ Error: {ex.Message}");
+        Environment.Exit(1);
+    }
+}, restoreDbOption, restoreFileOption, restoreForceOption);
+
 rootCommand.AddCommand(dbCommand);
 rootCommand.AddCommand(backupCommand);
 rootCommand.AddCommand(listBackupsCommand);
+rootCommand.AddCommand(restoreCommand);
 
 return await rootCommand.InvokeAsync(args);

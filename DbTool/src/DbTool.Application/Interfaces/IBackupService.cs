@@ -29,6 +29,15 @@ public interface IBackupService
     Task<BackupInfoDto?> GetLatestBackupAsync(
         string databaseName,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Restores a database from a backup file.
+    /// </summary>
+    Task<RestoreResultDto> RestoreBackupAsync(
+        string databaseName,
+        string backupFilePath,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>

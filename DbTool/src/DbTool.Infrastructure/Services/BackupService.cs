@@ -124,4 +124,60 @@ public class BackupService : IBackupService
             backup.CreatedAt
         );
     }
+
+    public async Task<RestoreResultDto> RestoreBackupAsync(
+        string databaseName,
+        string backupFilePath,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        // Validate backup file exists
+        if (!File.Exists(backupFilePath))
+        {
+            return new RestoreResultDto(
+                false,
+                databaseName,
+                backupFilePath,
+                $"Backup file not found: {backupFilePath}"
+            );
+        }
+
+        // Get database connection
+        var connection = await _connectionRepository.GetByNameAsync(databaseName, cancellationToken);
+        if (connection == null)
+        {
+            return new RestoreResultDto(
+                false,
+                databaseName,
+                backupFilePath,
+                $"Database connection '{databaseName}' not found"
+            );
+        }
+
+        try
+        {
+            progress?.Report($"Starting restore to '{databaseName}' from {Path.GetFileName(backupFilePath)}...");
+
+            // Perform restore
+            var provider = ProviderFactory.CreateProvider(connection.EngineType);
+            await provider.RestoreAsync(connection, backupFilePath, progress, cancellationToken);
+
+            progress?.Report("✓ Restore completed successfully");
+
+            return new RestoreResultDto(
+                true,
+                databaseName,
+                backupFilePath
+            );
+        }
+        catch (Exception ex)
+        {
+            return new RestoreResultDto(
+                false,
+                databaseName,
+                backupFilePath,
+                ex.Message
+            );
+        }
+    }
 }
