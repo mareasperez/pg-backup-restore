@@ -1,29 +1,37 @@
+using System.IO.Compression;
 using DbTool.Application.DTOs;
 using DbTool.Application.Interfaces;
+using DbTool.Application.Settings;
 using DbTool.Domain.Entities;
 using DbTool.Domain.Enums;
 using DbTool.Domain.Interfaces;
 using DbTool.Infrastructure.Providers;
+using Microsoft.Extensions.Options;
 
 namespace DbTool.Infrastructure.Services;
 
 /// <summary>
-/// Implementation of IBackupService.
+/// Implementation of IBackupService with compression support.
 /// </summary>
 public class BackupService : IBackupService
 {
     private readonly IDatabaseConnectionRepository _connectionRepository;
     private readonly IBackupRepository _backupRepository;
+    private readonly ICompressionService _compressionService;
+    private readonly DbToolSettings _settings;
     private readonly string _defaultBackupRoot;
 
     public BackupService(
         IDatabaseConnectionRepository connectionRepository,
         IBackupRepository backupRepository,
-        string? backupRoot = null)
+        ICompressionService compressionService,
+        IOptions<DbToolSettings> options)
     {
         _connectionRepository = connectionRepository;
         _backupRepository = backupRepository;
-        _defaultBackupRoot = backupRoot ?? Path.Combine(Directory.GetCurrentDirectory(), "backups");
+        _compressionService = compressionService;
+        _settings = options.Value;
+        _defaultBackupRoot = _settings.Backup.DefaultBackupDirectory;
     }
 
     public async Task<BackupResultDto> CreateBackupAsync(
@@ -44,6 +52,7 @@ public class BackupService : IBackupService
         Directory.CreateDirectory(backupDir);
 
         var backupFilePath = Path.Combine(backupDir, $"{databaseName}.sql");
+        var finalFilePath = backupFilePath;
 
         // Create backup record
         var backup = new Backup
@@ -62,14 +71,39 @@ public class BackupService : IBackupService
             var provider = ProviderFactory.CreateProvider(connection.EngineType);
             await provider.BackupAsync(connection, backupFilePath, progress, cancellationToken);
 
-            // Update backup record
             var fileInfo = new FileInfo(backupFilePath);
+            var originalSize = fileInfo.Length;
+
+            // Compress if enabled
+            if (_settings.Backup.EnableCompression)
+            {
+                progress?.Report("Compressing backup...");
+                
+                var compressedPath = backupFilePath + ".gz";
+                var compressionLevel = ParseCompressionLevel(_settings.Backup.CompressionLevel);
+                
+                await _compressionService.CompressFileAsync(backupFilePath, compressedPath, compressionLevel, cancellationToken);
+                
+                // Delete original uncompressed file
+                File.Delete(backupFilePath);
+                
+                finalFilePath = compressedPath;
+                var compressedInfo = new FileInfo(compressedPath);
+                var compressedSize = compressedInfo.Length;
+                var reduction = (1 - (double)compressedSize / originalSize) * 100;
+                
+                progress?.Report($"✓ Compressed: {FormatBytes(originalSize)} → {FormatBytes(compressedSize)} ({reduction:F1}% reduction)");
+            }
+
+            // Update backup record
+            var finalFileInfo = new FileInfo(finalFilePath);
             backup.Id = backupId;
-            backup.FileSizeBytes = fileInfo.Length;
+            backup.FilePath = finalFilePath;
+            backup.FileSizeBytes = finalFileInfo.Length;
             backup.Status = BackupStatus.Success;
             await _backupRepository.UpdateAsync(backup, cancellationToken);
 
-            return new BackupResultDto(true, backupFilePath, fileInfo.Length);
+            return new BackupResultDto(true, finalFilePath, finalFileInfo.Length);
         }
         catch (Exception ex)
         {
@@ -154,13 +188,29 @@ public class BackupService : IBackupService
             );
         }
 
+        string? tempDecompressedFile = null;
+
         try
         {
             progress?.Report($"Starting restore to '{databaseName}' from {Path.GetFileName(backupFilePath)}...");
 
+            var sqlFilePath = backupFilePath;
+
+            // Check if file is compressed
+            if (_compressionService.IsCompressed(backupFilePath))
+            {
+                progress?.Report("Decompressing backup...");
+                
+                tempDecompressedFile = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.sql");
+                await _compressionService.DecompressFileAsync(backupFilePath, tempDecompressedFile, cancellationToken);
+                
+                sqlFilePath = tempDecompressedFile;
+                progress?.Report("✓ Decompression complete");
+            }
+
             // Perform restore
             var provider = ProviderFactory.CreateProvider(connection.EngineType);
-            await provider.RestoreAsync(connection, backupFilePath, progress, cancellationToken);
+            await provider.RestoreAsync(connection, sqlFilePath, progress, cancellationToken);
 
             progress?.Report("✓ Restore completed successfully");
 
@@ -179,5 +229,45 @@ public class BackupService : IBackupService
                 ex.Message
             );
         }
+        finally
+        {
+            // Clean up temp file
+            if (tempDecompressedFile != null && File.Exists(tempDecompressedFile))
+            {
+                try
+                {
+                    File.Delete(tempDecompressedFile);
+                }
+                catch
+                {
+                    // Ignore cleanup errors
+                }
+            }
+        }
+    }
+
+    private static CompressionLevel ParseCompressionLevel(string level)
+    {
+        return level.ToLowerInvariant() switch
+        {
+            "fastest" => CompressionLevel.Fastest,
+            "optimal" => CompressionLevel.Optimal,
+            "smallestsize" => CompressionLevel.SmallestSize,
+            "nocompression" => CompressionLevel.NoCompression,
+            _ => CompressionLevel.Optimal
+        };
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB" };
+        double len = bytes;
+        int order = 0;
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+        return $"{len:0.##} {sizes[order]}";
     }
 }

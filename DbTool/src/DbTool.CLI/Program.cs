@@ -1,10 +1,22 @@
 using System.CommandLine;
 using DbTool.Application.DTOs;
 using DbTool.Application.Interfaces;
+using DbTool.Application.Settings;
 using DbTool.Infrastructure;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
+// Load configuration
+var configuration = new ConfigurationBuilder()
+    .SetBasePath(Directory.GetCurrentDirectory())
+    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+    .Build();
+
 var services = new ServiceCollection();
+
+// Configure Options Pattern
+services.Configure<DbToolSettings>(configuration.GetSection("DbTool"));
+
 services.AddInfrastructure();
 var serviceProvider = services.BuildServiceProvider();
 
